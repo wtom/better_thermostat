@@ -12,35 +12,13 @@ from homeassistant.components.climate.const import (
     HVAC_MODE_OFF,
 )
 
+from ..const import CONF_HEAT_AUTO_SWAPPED
+
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def log_info(self, message):
-    """Log a message to the info log.
-
-    Parameters
-    ----------
-    self :
-            self instance of better_thermostat
-    message :
-            the message to log
-
-    Returns
-    -------
-    None
-    """
-    _LOGGER.debug(
-        "better_thermostat with config name: %s, %s TRV: %s",
-        self.name,
-        message,
-        self.hass.states.get(self.heater_entity_id)
-        .attributes.get("device")
-        .get("friendlyName"),
-    )
-
-
-def mode_remap(self, hvac_mode: str, inbound: bool = False) -> str:
+def mode_remap(self, entity_id, hvac_mode: str, inbound: bool = False) -> str:
     """Remap HVAC mode to correct mode if nessesary.
 
     Parameters
@@ -58,25 +36,28 @@ def mode_remap(self, hvac_mode: str, inbound: bool = False) -> str:
     str
             remapped mode according to device's quirks
     """
-    _heat_auto_swapped = self._config.get("heat_auto_swapped")
+    _heat_auto_swapped = self.real_trvs[entity_id]["advanced"].get(
+        CONF_HEAT_AUTO_SWAPPED, False
+    )
+
     if _heat_auto_swapped:
         if hvac_mode == HVAC_MODE_HEAT and inbound is False:
             return HVAC_MODE_AUTO
         elif hvac_mode == HVAC_MODE_AUTO and inbound is True:
             return HVAC_MODE_HEAT
         else:
-            return HVAC_MODE_OFF
+            return hvac_mode
     else:
         if hvac_mode != HVAC_MODE_AUTO:
             return hvac_mode
         else:
             _LOGGER.error(
-                f"better_thermostat {self.name}: HVAC mode {hvac_mode} is not supported by this device, is it possible that you forgot to set the heat auto swapped option?"
+                f"better_thermostat {self.name}: {entity_id} HVAC mode {hvac_mode} is not supported by this device, is it possible that you forgot to set the heat auto swapped option?"
             )
             return HVAC_MODE_OFF
 
 
-def calculate_local_setpoint_delta(self) -> Union[float, None]:
+def calculate_local_setpoint_delta(self, entity_id) -> Union[float, None]:
     """Calculate local delta to adjust the setpoint of the TRV based on the air temperature of the external sensor.
 
     This calibration is for devices with local calibration option, it syncs the current temperature of the TRV to the target temperature of
@@ -92,32 +73,36 @@ def calculate_local_setpoint_delta(self) -> Union[float, None]:
     float
             new local calibration delta
     """
-    if self.local_temperature_calibration_entity is None:
-        return None
-
-    _calibration_state = self.hass.states.get(
-        self.local_temperature_calibration_entity
-    ).state
     _context = "calculate_local_setpoint_delta()"
 
+    if self.real_trvs[entity_id]["local_temperature_calibration_entity"] is None:
+        return None
+
     _current_trv_calibration = convert_to_float(
-        str(_calibration_state), self.name, _context
+        str(
+            self.hass.states.get(
+                self.real_trvs[entity_id]["local_temperature_calibration_entity"]
+            ).state
+        ),
+        self.name,
+        _context,
+    )
+    _cur_trv_temp = convert_to_float(
+        str(self.real_trvs[entity_id]["current_temperature"]), self.name, _context
     )
 
-    if None in (_current_trv_calibration, self._cur_temp, self._TRV_current_temp):
+    if None in (_current_trv_calibration, self._cur_temp, _cur_trv_temp):
         _LOGGER.warning(
-            f"better thermostat {self.name}: Could not calculate local setpoint delta in {_context}:"
-            f" current_trv_calibration: {_current_trv_calibration}, current_trv_temp: {self._TRV_current_temp}, cur_temp: {self._cur_temp}"
+            f"better thermostat {self.name}: {entity_id} Could not calculate local setpoint delta in {_context}:"
+            f" current_trv_calibration: {_current_trv_calibration}, current_trv_temp: {_cur_trv_temp}, cur_temp: {self._cur_temp}"
         )
         return None
 
-    _new_local_calibration = (
-        self._cur_temp - self._TRV_current_temp
-    ) + _current_trv_calibration
+    _new_local_calibration = (self._cur_temp - _cur_trv_temp) + _current_trv_calibration
     return convert_to_float(str(_new_local_calibration), self.name, _context)
 
 
-def calculate_setpoint_override(self) -> Union[float, None]:
+def calculate_setpoint_override(self, entity_id) -> Union[float, None]:
     """Calculate new setpoint for the TRV based on its own temperature measurement and the air temperature of the external sensor.
 
     This calibration is for devices with no local calibration option, it syncs the target temperature of the TRV to a new target
@@ -133,20 +118,21 @@ def calculate_setpoint_override(self) -> Union[float, None]:
     float
             new target temp with calibration
     """
-    if None in (self._target_temp, self._cur_temp, self._TRV_current_temp):
+    _cur_trv_temp = self.hass.states.get(entity_id).attributes["current_temperature"]
+    if None in (self._target_temp, self._cur_temp, _cur_trv_temp):
         return None
 
-    #_calibrated_setpoint = (self._target_temp - self._cur_temp) + self._TRV_current_temp
-    _temp_diff = (self._target_temp - self._cur_temp)
-    _calibrated_setpoint = _temp_diff + self._TRV_current_temp
-    if _temp_diff > 0.0 and _calibrated_setpoint - self._TRV_current_temp < 2.3:
-        _calibrated_setpoint = self._TRV_current_temp + 2.3
+    # _calibrated_setpoint = (self._target_temp - self._cur_temp) + _cur_trv_temp
+    _temp_diff = self._target_temp - self._cur_temp
+    _calibrated_setpoint = _temp_diff + _cur_trv_temp
+    if _temp_diff > 0.0 and _calibrated_setpoint - _cur_trv_temp < 2.3:
+        _calibrated_setpoint = _cur_trv_temp + 2.3
 
     # check if new setpoint is inside the TRV's range, else set to min or max
-    if _calibrated_setpoint < self._TRV_min_temp:
-        _calibrated_setpoint = self._TRV_min_temp
-    if _calibrated_setpoint > self._TRV_max_temp:
-        _calibrated_setpoint = self._TRV_max_temp
+    if _calibrated_setpoint < self.real_trvs[entity_id]["min_temp"]:
+        _calibrated_setpoint = self.real_trvs[entity_id]["min_temp"]
+    if _calibrated_setpoint > self.real_trvs[entity_id]["max_temp"]:
+        _calibrated_setpoint = self.real_trvs[entity_id]["max_temp"]
     return _calibrated_setpoint
 
 
@@ -173,9 +159,11 @@ def convert_to_float(
     """
     if isinstance(value, float):
         return value
+    elif value is None or value == "None":
+        return None
     else:
         try:
-            return float(str(format(float(value), ".2f")))
+            return float(str(format(float(value), ".1f")))
         except (ValueError, TypeError, AttributeError, KeyError):
             _LOGGER.debug(
                 f"better thermostat {instance_name}: Could not convert '{value}' to float in {context}"
@@ -301,7 +289,7 @@ def convert_time(time_string):
         return None
 
 
-async def find_valve_entity(self):
+async def find_valve_entity(self, entity_id):
     """Find the local calibration entity for the TRV.
 
     This is a hacky way to find the local calibration entity for the TRV. It is not possible to find the entity
@@ -321,7 +309,7 @@ async def find_valve_entity(self):
             if no local calibration entity was found
     """
     entity_registry = er.async_get(self.hass)
-    reg_entity = entity_registry.async_get(self.heater_entity_id)
+    reg_entity = entity_registry.async_get(entity_id)
     entity_entries = async_entries_for_config_entry(
         entity_registry, reg_entity.config_entry_id
     )
@@ -329,19 +317,19 @@ async def find_valve_entity(self):
         uid = entity.unique_id
         # Make sure we use the correct device entities
         if entity.device_id == reg_entity.device_id:
-            if "_valve_position" in uid:
+            if "_valve_position" in uid or "_position" in uid:
                 _LOGGER.debug(
-                    f"better thermostat: Found valve position entity {entity.entity_id} for {self.heater_entity_id}"
+                    f"better thermostat: Found valve position entity {entity.entity_id} for {entity_id}"
                 )
                 return entity.entity_id
 
     _LOGGER.debug(
-        f"better thermostat: Could not find valve position entity for {self.heater_entity_id}"
+        f"better thermostat: Could not find valve position entity for {entity_id}"
     )
     return None
 
 
-async def find_local_calibration_entity(self):
+async def find_local_calibration_entity(self, entity_id):
     """Find the local calibration entity for the TRV.
 
     This is a hacky way to find the local calibration entity for the TRV. It is not possible to find the entity
@@ -361,7 +349,7 @@ async def find_local_calibration_entity(self):
             if no local calibration entity was found
     """
     entity_registry = er.async_get(self.hass)
-    reg_entity = entity_registry.async_get(self.heater_entity_id)
+    reg_entity = entity_registry.async_get(entity_id)
     entity_entries = async_entries_for_config_entry(
         entity_registry, reg_entity.config_entry_id
     )
@@ -371,17 +359,17 @@ async def find_local_calibration_entity(self):
         if entity.device_id == reg_entity.device_id:
             if "local_temperature_calibration" in uid:
                 _LOGGER.debug(
-                    f"better thermostat: Found local calibration entity {entity.entity_id} for {self.heater_entity_id}"
+                    f"better thermostat: Found local calibration entity {entity.entity_id} for {entity_id}"
                 )
                 return entity.entity_id
 
     _LOGGER.debug(
-        f"better thermostat: Could not find local calibration entity for {self.heater_entity_id}"
+        f"better thermostat: Could not find local calibration entity for {entity_id}"
     )
     return None
 
 
-async def get_trv_intigration(self):
+async def get_trv_intigration(self, entity_id):
     """Get the integration of the TRV.
 
     Parameters
@@ -395,14 +383,40 @@ async def get_trv_intigration(self):
             the integration of the TRV
     """
     entity_reg = er.async_get(self.hass)
-    entry = entity_reg.async_get(self.heater_entity_id)
+    entry = entity_reg.async_get(entity_id)
     try:
         return entry.platform
     except AttributeError:
         return "generic_thermostat"
 
 
-async def get_device_model(self):
+def get_max_value(obj, value, default):
+    """Get the max value of an dict object."""
+    try:
+        _raw = []
+        for key in obj.keys():
+            _temp = obj[key].get(value, 0)
+            if _temp is not None:
+                _raw.append(_temp)
+        return max(_raw, key=lambda x: float(x))
+    except (KeyError, ValueError):
+        return default
+
+
+def get_min_value(obj, value, default):
+    """Get the min value of an dict object."""
+    try:
+        _raw = []
+        for key in obj.keys():
+            _temp = obj[key].get(value, 999)
+            if _temp is not None:
+                _raw.append(_temp)
+        return min(_raw, key=lambda x: float(x))
+    except (KeyError, ValueError):
+        return default
+
+
+async def get_device_model(self, entity_id):
     """Fetches the device model from HA.
     Parameters
     ----------
@@ -416,7 +430,7 @@ async def get_device_model(self):
     if self.model is None:
         try:
             entity_reg = er.async_get(self.hass)
-            entry = entity_reg.async_get(self.heater_entity_id)
+            entry = entity_reg.async_get(entity_id)
             dev_reg = dr.async_get(self.hass)
             device = dev_reg.async_get(entry.device_id)
             _LOGGER.debug(f"better_thermostat {self.name}: found device:")
@@ -438,7 +452,7 @@ async def get_device_model(self):
         ):
             try:
                 return (
-                    self.hass.states.get(self.heater_entity_id)
+                    self.hass.states.get(entity_id)
                     .attributes.get("device")
                     .get("model", "generic")
                 )
