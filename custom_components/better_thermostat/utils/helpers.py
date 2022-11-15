@@ -156,7 +156,7 @@ def calculate_setpoint_override(self) -> Union[float, None]:
         _calibrated_setpoint = self._TRV_min_temp
     if _calibrated_setpoint > self._TRV_max_temp:
         _calibrated_setpoint = self._TRV_max_temp
-    return _calibrated_setpoint
+    return round_to_hundredth_degree(_calibrated_setpoint)
 
 
 def convert_to_float(
