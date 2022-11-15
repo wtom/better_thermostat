@@ -136,11 +136,20 @@ def calculate_setpoint_override(self) -> Union[float, None]:
     if None in (self._target_temp, self._cur_temp, self._TRV_current_temp):
         return None
 
-    #_calibrated_setpoint = (self._target_temp - self._cur_temp) + self._TRV_current_temp
-    _temp_diff = (self._target_temp - self._cur_temp)
+    # _calibrated_setpoint = (self._target_temp - self._cur_temp) + self._TRV_current_temp
+    _real_trv_havc_action = self.hass.states.get(self.heater_entity_id).attributes.get(
+        "hvac_action", None
+    )
+    _temp_diff = self._target_temp - self._cur_temp
     _calibrated_setpoint = _temp_diff + self._TRV_current_temp
-    if _temp_diff > 0.0 and _calibrated_setpoint - self._TRV_current_temp < 2.3:
+    if (
+        (_real_trv_havc_action == "heating" and _temp_diff > -0.2)
+        or (_real_trv_havc_action == "idle" and _temp_diff > 0.2)
+    ) and _calibrated_setpoint - self._TRV_current_temp < 2.3:
         _calibrated_setpoint = self._TRV_current_temp + 2.3
+
+    if _real_trv_havc_action == "idle" and (_temp_diff < 0.2 and _temp_diff > -0.2):
+        _calibrated_setpoint = self._TRV_current_temp - 0.5
 
     # check if new setpoint is inside the TRV's range, else set to min or max
     if _calibrated_setpoint < self._TRV_min_temp:
