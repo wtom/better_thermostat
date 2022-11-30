@@ -150,6 +150,7 @@ def calculate_setpoint_override(self, entity_id) -> Union[float, None]:
 
     if self.real_trvs[entity_id]["advanced"].get("fix_calibration", False) is True:
         _temp_diff = float(float(self.bt_target_temp) - float(_new_cur_temp))
+        _calibrated_setpoint = (_temp_diff * 3) + _cur_trv_temp
         if _temp_diff > 0.0 and _calibrated_setpoint - _cur_trv_temp < 1.5:
             _calibrated_setpoint += 1.5
 
