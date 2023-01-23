@@ -230,7 +230,7 @@ def calculate_setpoint_override(self, entity_id) -> Union[float, None]:
 
     if _overheating_protection is True:
         if (self.cur_temp + 0.10) >= self.bt_target_temp:
-            _calibrated_setpoint -= 1.0
+            _calibrated_setpoint = self.bt_target_temp
 
     _calibrated_setpoint = round_down_to_half_degree(_calibrated_setpoint)
 
