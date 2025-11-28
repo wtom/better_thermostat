@@ -320,10 +320,30 @@ def _compute_predictive_percent(
 ) -> Tuple[float, Dict[str, Any]]:
     """Core MPC minimisation routine."""
 
+    # delta_t is target - current (passed in by caller)
     error_now = delta_t
     dt_last = now - state.last_time if state.last_time > 0 else 0.0
-    step_minutes = MPC_STEP_SECONDS / 60.0
 
+    # step scaling: interpret params as per-minute or per-step? use per-minute * step_minutes
+    step_minutes = MPC_STEP_SECONDS / 60.0
+    # compute per-step effective gain & loss (safe guards)
+    raw_gain = state.gain_est if state.gain_est is not None else params.mpc_thermal_gain
+    raw_loss = state.loss_est if state.loss_est is not None else params.mpc_loss_coeff
+
+    # scale to per-step effect (comment: choose semantics: params as per-minute)
+    gain_step = float(raw_gain) * step_minutes
+    loss_step = float(raw_loss) * step_minutes
+
+    # clamp sensible ranges (avoid negative or >1 loss)
+    if loss_step < 0.0:
+        loss_step = 0.0
+    if loss_step > 0.9:
+        loss_step = 0.9
+
+    if gain_step < 0.0:
+        gain_step = 0.0
+
+    # adapt gain/loss online (existing logic, but guard and small tweaks)
     if (
         params.mpc_adapt
         and state.last_temp is not None
@@ -336,49 +356,74 @@ def _compute_predictive_percent(
             error_now_current = inp.target_temp_C - inp.current_temp_C
             last_percent = state.last_percent if state.last_percent is not None else 0.0
             u_last = max(0.0, min(100.0, last_percent))
+
             if state.gain_est is None:
                 state.gain_est = params.mpc_thermal_gain
             if state.loss_est is None:
                 state.loss_est = params.mpc_loss_coeff
 
-            if error_prev != 0.0:
-                if u_last > 0.0:
-                    decay = error_prev - error_now_current
-                    if decay > 0.0:
-                        gain_candidate = (decay / abs(error_prev)) * (100.0 / u_last)
+            # only update from meaningful data
+            if error_prev != 0.0 and dt_last > 0.0:
+                # observed decay (positive if error reduced)
+                decay = error_prev - error_now_current
+                if u_last > 0.0 and decay > 0.0:
+                    # estimate gain per 100% per step (use step scale)
+                    # compute candidate as °C reduced per 100% valve over the interval
+                    # normalize to per-minute then to params units by dividing step_minutes
+                    try:
+                        gain_candidate_step = decay / (u_last / 100.0)
+                        # convert to per-minute form for storage-consistency
+                        gain_candidate = gain_candidate_step / step_minutes
+                        # exponential smoothing (alpha)
                         state.gain_est = (
                             1.0 - params.mpc_adapt_alpha
                         ) * state.gain_est + params.mpc_adapt_alpha * gain_candidate
-                    else:
-                        # Reduce the assumed thermal gain if recent heating failed to shrink the error
+                    except Exception:
+                        pass
+                else:
+                    # if heating did not reduce error, gently shrink gain_est (conservative)
+                    decay_ratio = 0.0
+                    try:
+                        decay_ratio = min(1.0, abs(decay) / abs(error_prev))
+                    except Exception:
                         decay_ratio = 0.0
-                        try:
-                            decay_ratio = min(1.0, abs(decay) / abs(error_prev))
-                        except (TypeError, ValueError, ZeroDivisionError):
-                            decay_ratio = 0.0
-                        if decay_ratio > 0.0:
-                            shrink = 1.0 - params.mpc_adapt_alpha * decay_ratio
-                            if shrink < 0.0:
-                                shrink = 0.0
-                            state.gain_est *= shrink
+                    if decay_ratio > 0.0:
+                        shrink = 1.0 - params.mpc_adapt_alpha * decay_ratio
+                        if shrink < 0.0:
+                            shrink = 0.0
+                        state.gain_est *= shrink
 
+                # loss estimate: how much error changed without heating (leak)
                 leak_raw = error_now_current - error_prev
-                loss_candidate = max(0.0, leak_raw / abs(error_prev))
+                try:
+                    loss_candidate = max(0.0, leak_raw / abs(error_prev) / step_minutes)
+                except Exception:
+                    loss_candidate = 0.0
                 state.loss_est = (
                     1.0 - params.mpc_adapt_alpha
                 ) * state.loss_est + params.mpc_adapt_alpha * loss_candidate
 
+            # clamp back to safe limits
             state.gain_est = max(
                 params.mpc_gain_min, min(params.mpc_gain_max, state.gain_est)
             )
             state.loss_est = max(
                 params.mpc_loss_min, min(params.mpc_loss_max, state.loss_est)
             )
-        except (ValueError, TypeError, ZeroDivisionError):
+            # recompute step values from clamped estimates
+            raw_gain = state.gain_est
+            raw_loss = state.loss_est
+            gain_step = float(raw_gain) * step_minutes
+            loss_step = float(raw_loss) * step_minutes
+            if loss_step < 0.0:
+                loss_step = 0.0
+            if loss_step > 0.9:
+                loss_step = 0.9
+        except Exception:
+            # keep old estimates on failure
             pass
 
-    gain = state.gain_est if state.gain_est is not None else params.mpc_thermal_gain
-    loss = state.loss_est if state.loss_est is not None else params.mpc_loss_coeff
+    # prepare MPC search
     horizon = MPC_HORIZON_STEPS
     control_pen = max(0.0, float(params.mpc_control_penalty))
     change_pen = max(0.0, float(params.mpc_change_penalty))
@@ -387,33 +432,43 @@ def _compute_predictive_percent(
     best_percent = 0.0
     best_cost = None
     eval_count = 0
-    # loss_step = loss * step_minutes
-    # gain_step = gain * step_minutes
+
+    # iterate candidates (coarse grid ok). keep candidate in 0..100
     for candidate in range(0, 101, 2):
-        future_error = error_now
+        u = candidate / 100.0
+        future_error = error_now if error_now is not None else 0.0
         cost = 0.0
+        # simulate horizon with per-step dynamics:
         for _ in range(horizon):
-            future_error = future_error * (1.0 + loss) - gain * (candidate / 100.0)
-            # heating_effect = gain_step * (candidate / 100.0)
-            # future_error = future_error * (1.0 + loss_step) - heating_effect
+            # passive drift (cooling toward setpoint) reduces |error|
+            future_error = future_error * (1.0 - loss_step)
+            # heating effect (reduces error when positive)
+            future_error = future_error - gain_step * u
             cost += future_error * future_error
             eval_count += 1
-        cost += control_pen * (candidate * candidate)
+
+        # scale penalties to [0..1] space
+        cost += control_pen * (u * u)  # use normalized u
         if last_percent is not None:
-            cost += change_pen * abs(candidate - last_percent)
+            # normalize change to 0..1
+            cost += change_pen * abs((candidate - last_percent) / 100.0)
+
         if best_cost is None or cost < best_cost:
             best_cost = cost
             best_percent = float(candidate)
 
+    # save last measurements
     state.last_temp = inp.current_temp_C
     state.last_time = now
 
     mpc_debug = {
-        "mpc_gain": _round_for_debug(gain, 4),
-        "mpc_loss": _round_for_debug(loss, 4),
+        "mpc_gain": _round_for_debug(raw_gain, 4),
+        "mpc_loss": _round_for_debug(raw_loss, 4),
         "mpc_horizon": horizon,
         "mpc_eval_count": eval_count,
         "mpc_step_minutes": _round_for_debug(step_minutes, 3),
+        "mpc_gain_step": _round_for_debug(gain_step, 6),
+        "mpc_loss_step": _round_for_debug(loss_step, 6),
     }
 
     if best_cost is not None:
