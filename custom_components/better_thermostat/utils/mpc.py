@@ -26,7 +26,7 @@ class MpcParams:
     mpc_thermal_gain: float = 0.08
     mpc_loss_coeff: float = 0.015
     mpc_control_penalty: float = 0.0002
-    mpc_change_penalty: float = 0.003
+    mpc_change_penalty: float = 0.005
     mpc_adapt: bool = True
     mpc_gain_min: float = 0.005
     mpc_gain_max: float = 0.5
@@ -387,14 +387,15 @@ def _compute_predictive_percent(
     best_percent = 0.0
     best_cost = None
     eval_count = 0
-    loss_step = loss * step_minutes
-    gain_step = gain * step_minutes
+    # loss_step = loss * step_minutes
+    # gain_step = gain * step_minutes
     for candidate in range(0, 101, 2):
         future_error = error_now
         cost = 0.0
         for _ in range(horizon):
-            heating_effect = gain_step * (candidate / 100.0)
-            future_error = future_error * (1.0 + loss_step) - heating_effect
+            future_error = future_error * (1.0 + loss) - gain * (candidate / 100.0)
+            # heating_effect = gain_step * (candidate / 100.0)
+            # future_error = future_error * (1.0 + loss_step) - heating_effect
             cost += future_error * future_error
             eval_count += 1
         cost += control_pen * (candidate * candidate)
