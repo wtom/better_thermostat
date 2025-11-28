@@ -419,7 +419,7 @@ def calculate_calibration_setpoint(self, entity_id) -> float | None:
                             (float(_max_temp) - _cur_trv_temp) * _valve_fraction
                         )
         else:
-            _calibrated_setpoint = _cur_target_temp
+            _calibrated_setpoint = _cur_trv_temp
     else:
         self.real_trvs[entity_id].pop("calibration_balance", None)
 

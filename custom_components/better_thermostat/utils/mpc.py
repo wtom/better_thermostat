@@ -268,8 +268,8 @@ def compute_mpc(inp: MpcInput, params: MpcParams) -> Optional[MpcOutput]:
 
     flow_cap = params.cap_max_K * (1.0 - (percent_out / 100.0))
     setpoint_eff = None
-    if inp.target_temp_C is not None and delta_t is not None and delta_t <= 0.0:
-        setpoint_eff = inp.target_temp_C - flow_cap
+    if inp.trv_temp_C is not None and delta_t is not None and delta_t <= 0.0:
+        setpoint_eff = inp.trv_temp_C - flow_cap
 
     debug.update(
         {
