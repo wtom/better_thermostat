@@ -34,7 +34,7 @@ class MpcParams:
     mpc_loss_max: float = 0.05
     mpc_adapt_alpha: float = 0.1
     deadzone_threshold_pct: float = 20.0
-    deadzone_temp_delta_K: float = 0.1
+    deadzone_temp_delta_K: float = 0.2
     deadzone_time_s: float = 300.0
     deadzone_hits_required: int = 3
     deadzone_raise_pct: float = 2.0
