@@ -11,7 +11,7 @@ from statistics import mean
 # preferred for HA time handling (UTC aware)
 from homeassistant.util import dt as dt_util
 from collections import deque
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import voluptuous as vol
 import homeassistant.helpers.config_validation as cv
@@ -120,7 +120,6 @@ from .balance import (
     export_states as balance_export_states,
     import_states as balance_import_states,
     reset_balance_state as balance_reset_state,
-    build_balance_key,
 )
 from .utils.mpc import export_mpc_state_map, import_mpc_state_map
 
@@ -614,6 +613,7 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
                 "ignore_trv_states": False,
                 "valve_position": None,
                 "valve_position_entity": None,
+                "valve_position_writable": None,
                 "max_temp": None,
                 "min_temp": None,
                 "target_temp_step": None,
@@ -2453,6 +2453,7 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
             prefix = f"{uid}:"
             mpc_states = export_mpc_state_map(prefix)
             if mpc_states:
+
                 def _round_val(value, digits):
                     try:
                         return round(float(value), digits)
@@ -2505,27 +2506,36 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
                     if rep_trv is None:
                         rep_trv = next(iter(self.real_trvs.keys()), None)
                     if rep_trv is not None:
+                        rep_bucket_data: dict[str, Any] | None = None
                         rep_entry = summary.get(rep_trv, {})
-                        rep_bucket = None
                         if isinstance(rep_entry, dict):
                             rep_bucket = rep_entry.get("current_bucket", current_bucket)
                             buckets = rep_entry.get("buckets") or {}
-                            bucket_data = buckets.get(rep_bucket)
-                            if bucket_data is None and buckets:
-                                bucket_data = next(iter(buckets.values()))
-                        else:
-                            bucket_data = None
-                        if bucket_data:
-                            val = bucket_data.get("min_eff_pct")
+                            candidate = buckets.get(rep_bucket)
+                            if isinstance(candidate, dict) and candidate:
+                                rep_bucket_data = candidate
+                            elif buckets:
+                                first = next(
+                                    (
+                                        b
+                                        for b in buckets.values()
+                                        if isinstance(b, dict) and b
+                                    ),
+                                    None,
+                                )
+                                if isinstance(first, dict) and first:
+                                    rep_bucket_data = first
+                        if rep_bucket_data:
+                            val = rep_bucket_data.get("min_eff_pct")
                             if val is not None:
                                 dev_specific["mpc_min_eff_pct"] = val
-                            val = bucket_data.get("gain")
+                            val = rep_bucket_data.get("gain")
                             if val is not None:
                                 dev_specific["mpc_gain"] = val
-                            val = bucket_data.get("loss")
+                            val = rep_bucket_data.get("loss")
                             if val is not None:
                                 dev_specific["mpc_loss"] = val
-                            hits = bucket_data.get("dead_zone_hits")
+                            hits = rep_bucket_data.get("dead_zone_hits")
                             if isinstance(hits, (int, float)):
                                 dev_specific["mpc_dead_zone_hits"] = int(hits)
         except Exception:
