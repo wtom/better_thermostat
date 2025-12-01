@@ -39,7 +39,6 @@ class MpcParams:
     deadzone_hits_required: int = 3
     deadzone_raise_pct: float = 2.0
     deadzone_decay_pct: float = 1.0
-    deadzone_idle_time_s: float = 1800.0
 
 
 @dataclass
@@ -78,7 +77,6 @@ class _MpcState:
     last_trv_temp_ts: float = 0.0
     dead_zone_hits: int = 0
     min_effective_percent: Optional[float] = None
-    last_heat_activity_ts: float = 0.0
 
 
 _MPC_STATES: Dict[str, _MpcState] = {}
@@ -93,7 +91,6 @@ _STATE_EXPORT_FIELDS = (
     "last_trv_temp",
     "min_effective_percent",
     "dead_zone_hits",
-    "last_heat_activity_ts",
 )
 
 
@@ -493,6 +490,7 @@ def _apply_dead_zone_detection(
     delta_t: Optional[float],
     name: str,
     entity: str,
+    min_clamp_active: bool,
 ) -> tuple[int, Optional[float], Optional[float]]:
     """Update dead-zone tracking and min-effective clamps."""
 
@@ -514,27 +512,12 @@ def _apply_dead_zone_detection(
     time_delta = now - state.last_trv_temp_ts
     eval_after = max(params.deadzone_time_s, 1.0)
 
-    idle_req = max(0.0, params.deadzone_idle_time_s)
-    idle_elapsed = (
-        now - state.last_heat_activity_ts if state.last_heat_activity_ts > 0.0 else None
-    )
-    if idle_req > 0.0 and (idle_elapsed is None or idle_elapsed < idle_req):
-        _LOGGER.debug(
-            "better_thermostat %s: MPC dead-zone skip (%s) idle_elapsed=%s req=%s",
-            name,
-            entity,
-            _round_for_debug(idle_elapsed, 1) if idle_elapsed is not None else None,
-            idle_req,
-        )
-        state.dead_zone_hits = 0
-        state.last_trv_temp = inp.trv_temp_C
-        state.last_trv_temp_ts = now
-        return percent_out, temp_delta, time_delta
-
     if time_delta >= eval_after:
         tol = max(inp.tolerance_K, 0.0)
         needs_heat = delta_t is not None and delta_t > tol
-        small_command = 0 < percent_out <= params.deadzone_threshold_pct
+        small_command = percent_out > 0 and (
+            percent_out <= params.deadzone_threshold_pct or min_clamp_active
+        )
         weak_response = temp_delta is None or temp_delta <= params.deadzone_temp_delta_K
 
         if small_command and needs_heat and weak_response:
@@ -646,9 +629,11 @@ def _post_process_percent(
         except (TypeError, ValueError):
             delta_t = None
 
+    min_clamp_used = False
     min_eff = state.min_effective_percent
     if min_eff is not None and min_eff > 0.0 and smooth > 0.0 and smooth < min_eff:
         smooth = min_eff
+        min_clamp_used = True
         _LOGGER.debug(
             "better_thermostat %s: MPC clamp smooth (%s) to min_effective=%s",
             name,
@@ -680,6 +665,7 @@ def _post_process_percent(
         percent_out = int(round(min_eff))
         state.last_percent = float(percent_out)
         state.last_update_ts = now
+        min_clamp_used = True
         _LOGGER.debug(
             "better_thermostat %s: MPC clamp percent_out (%s) to min_effective=%s",
             name,
@@ -687,6 +673,7 @@ def _post_process_percent(
             _round_for_debug(min_eff, 2),
         )
 
+    min_clamp_for_dead_zone = min_clamp_used
     percent_out, temp_delta, time_delta = _apply_dead_zone_detection(
         inp=inp,
         params=params,
@@ -696,6 +683,7 @@ def _post_process_percent(
         delta_t=delta_t,
         name=name,
         entity=entity,
+        min_clamp_active=min_clamp_for_dead_zone,
     )
 
     min_eff = state.min_effective_percent
@@ -708,15 +696,13 @@ def _post_process_percent(
         percent_out = int(round(min_eff))
         state.last_percent = float(percent_out)
         state.last_update_ts = now
+        min_clamp_used = True
         _LOGGER.debug(
             "better_thermostat %s: MPC clamp percent_out (%s) to min_effective=%s",
             name,
             entity,
             _round_for_debug(min_eff, 2),
         )
-
-    if percent_out > 0:
-        state.last_heat_activity_ts = now
 
     trv_room_delta = None
     if inp.trv_temp_C is not None and inp.current_temp_C is not None:
@@ -740,6 +726,7 @@ def _post_process_percent(
         "trv_temp_delta": _round_for_debug(temp_delta, 3),
         "trv_time_delta_s": _round_for_debug(time_delta, 1),
         "trv_room_delta": _round_for_debug(trv_room_delta, 3),
+        "min_clamp_active": min_clamp_used,
     }
 
     if inp.temp_slope_K_per_min is not None:
