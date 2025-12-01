@@ -41,6 +41,7 @@ class MpcParams:
     deadzone_hits_required: int = 3
     deadzone_raise_pct: float = 2.0
     deadzone_decay_pct: float = 1.0
+    deadzone_room_delta_guard_K: float = 1.0
 
 
 @dataclass
@@ -751,7 +752,8 @@ def _apply_dead_zone_detection(
             percent_out <= params.deadzone_threshold_pct or min_clamp_active
         )
         weak_response = temp_delta is None or temp_delta <= params.deadzone_temp_delta_K
-        trv_not_hot = room_delta is None or room_delta <= params.deadzone_temp_delta_K
+        room_hot_guard = max(params.deadzone_room_delta_guard_K, 0.0)
+        trv_not_hot = room_delta is None or room_delta <= room_hot_guard
 
         if small_command and needs_heat and weak_response and trv_not_hot:
             state.dead_zone_hits += 1
