@@ -14,6 +14,8 @@ _LOGGER = logging.getLogger(__name__)
 # MPC operates on fixed 5-minute steps and a 12-step horizon.
 MPC_STEP_SECONDS = 300.0
 MPC_HORIZON_STEPS = 12
+PHASE_MIN_DURATION_S = 300.0
+PHASE_PERCENT_THRESHOLD = 1.0
 
 
 @dataclass
@@ -77,6 +79,12 @@ class _MpcState:
     last_trv_temp_ts: float = 0.0
     dead_zone_hits: int = 0
     min_effective_percent: Optional[float] = None
+    heat_phase_start_temp: Optional[float] = None
+    heat_phase_start_ts: float = 0.0
+    heat_phase_percent: Optional[float] = None
+    idle_phase_start_temp: Optional[float] = None
+    idle_phase_start_ts: float = 0.0
+    idle_phase_target: Optional[float] = None
 
 
 _MPC_STATES: Dict[str, _MpcState] = {}
@@ -187,6 +195,301 @@ def _round_for_debug(value: Any, digits: int = 3) -> Any:
         return round(float(value), digits)
     except (TypeError, ValueError):
         return value
+
+
+def _log_phase_event(
+    name: str, entity: str, phase: str, event: str, **details: Any
+) -> None:
+    parts = []
+    for key, value in details.items():
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            parts.append(f"{key}={value}")
+        else:
+            parts.append(f"{key}={_round_for_debug(value, 3)}")
+    suffix = f" ({' '.join(parts)})" if parts else ""
+    _LOGGER.debug(
+        "better_thermostat %s: MPC %s phase %s %s%s", name, entity, phase, event, suffix
+    )
+
+
+def _reset_heat_phase(state: _MpcState) -> None:
+    state.heat_phase_start_temp = None
+    state.heat_phase_start_ts = 0.0
+    state.heat_phase_percent = None
+
+
+def _reset_idle_phase(state: _MpcState) -> None:
+    state.idle_phase_start_temp = None
+    state.idle_phase_start_ts = 0.0
+    state.idle_phase_target = None
+
+
+def _blend_estimate(current: Optional[float], candidate: float, alpha: float) -> float:
+    base = current if current is not None else candidate
+    return (1.0 - alpha) * base + alpha * candidate
+
+
+def _apply_gain_candidate(
+    state: _MpcState, params: MpcParams, candidate: float
+) -> None:
+    alpha = min(max(params.mpc_adapt_alpha, 0.0), 1.0)
+    blended = _blend_estimate(state.gain_est, candidate, alpha)
+    state.gain_est = max(params.mpc_gain_min, min(params.mpc_gain_max, blended))
+
+
+def _penalize_gain_estimate(state: _MpcState, params: MpcParams) -> None:
+    if state.gain_est is None:
+        state.gain_est = params.mpc_thermal_gain
+    shrink = max(0.0, 1.0 - min(max(params.mpc_adapt_alpha, 0.0), 1.0))
+    state.gain_est *= shrink
+    state.gain_est = max(params.mpc_gain_min, min(params.mpc_gain_max, state.gain_est))
+
+
+def _apply_loss_candidate(
+    state: _MpcState, params: MpcParams, candidate: float
+) -> None:
+    alpha = min(max(params.mpc_adapt_alpha, 0.0), 1.0)
+    blended = _blend_estimate(state.loss_est, candidate, alpha)
+    state.loss_est = max(params.mpc_loss_min, min(params.mpc_loss_max, blended))
+
+
+def _penalize_loss_estimate(state: _MpcState, params: MpcParams) -> None:
+    if state.loss_est is None:
+        state.loss_est = params.mpc_loss_coeff
+    shrink = max(0.0, 1.0 - min(max(params.mpc_adapt_alpha, 0.0), 1.0))
+    state.loss_est *= shrink
+    state.loss_est = max(params.mpc_loss_min, min(params.mpc_loss_max, state.loss_est))
+
+
+def _start_heating_phase(
+    state: _MpcState, inp: MpcInput, now: float, percent: float
+) -> None:
+    if inp.current_temp_C is None:
+        _reset_heat_phase(state)
+        return
+    state.heat_phase_start_temp = float(inp.current_temp_C)
+    state.heat_phase_start_ts = now
+    state.heat_phase_percent = float(percent)
+
+
+def _start_idle_phase(state: _MpcState, inp: MpcInput, now: float) -> None:
+    if inp.current_temp_C is None:
+        _reset_idle_phase(state)
+        return
+    state.idle_phase_start_temp = float(inp.current_temp_C)
+    state.idle_phase_start_ts = now
+    state.idle_phase_target = inp.target_temp_C
+
+
+def _finalize_heating_phase(
+    state: _MpcState, inp: MpcInput, params: MpcParams, now: float
+) -> Dict[str, Any]:
+    name = inp.bt_name or "BT"
+    entity = inp.entity_id or "unknown"
+    result: Dict[str, Any] = {}
+    if not params.mpc_adapt:
+        _reset_heat_phase(state)
+        return result
+    if (
+        state.heat_phase_start_temp is None
+        or state.heat_phase_start_ts <= 0.0
+        or state.heat_phase_percent is None
+    ):
+        _reset_heat_phase(state)
+        _log_phase_event(name, entity, "heating", "skip", reason="missing_context")
+        return result
+    temp_now = inp.current_temp_C
+    if temp_now is None:
+        _reset_heat_phase(state)
+        _log_phase_event(name, entity, "heating", "skip", reason="missing_temp")
+        return result
+    duration = now - state.heat_phase_start_ts
+    temp_gain = float(temp_now) - float(state.heat_phase_start_temp)
+    percent_used = max(0.0, float(state.heat_phase_percent))
+    result.update(
+        {
+            "gain_duration_s": duration,
+            "gain_temp_delta": temp_gain,
+            "gain_percent_used": percent_used,
+        }
+    )
+    if duration < PHASE_MIN_DURATION_S or percent_used <= 0.0:
+        result["gain_phase_skipped"] = True
+        _reset_heat_phase(state)
+        _log_phase_event(
+            name,
+            entity,
+            "heating",
+            "skip",
+            duration_s=duration,
+            percent=percent_used,
+            reason="min_duration",
+        )
+        return result
+    duration_min = duration / 60.0
+    if duration_min <= 0.0:
+        _reset_heat_phase(state)
+        _log_phase_event(name, entity, "heating", "skip", reason="invalid_duration")
+        return result
+    if temp_gain > 0.0:
+        gain_candidate = (temp_gain / duration_min) / (percent_used / 100.0)
+        _apply_gain_candidate(state, params, gain_candidate)
+        result["gain_candidate"] = gain_candidate
+        result["gain_phase_skipped"] = False
+        _log_phase_event(
+            name,
+            entity,
+            "heating",
+            "finalize",
+            duration_s=duration,
+            temp_delta=temp_gain,
+            percent=percent_used,
+            candidate=gain_candidate,
+        )
+    else:
+        _penalize_gain_estimate(state, params)
+        result["gain_candidate"] = None
+        result["gain_phase_skipped"] = False
+        _log_phase_event(
+            name,
+            entity,
+            "heating",
+            "finalize",
+            duration_s=duration,
+            temp_delta=temp_gain,
+            percent=percent_used,
+            candidate=None,
+        )
+    _reset_heat_phase(state)
+    return result
+
+
+def _finalize_idle_phase(
+    state: _MpcState, inp: MpcInput, params: MpcParams, now: float
+) -> Dict[str, Any]:
+    name = inp.bt_name or "BT"
+    entity = inp.entity_id or "unknown"
+    result: Dict[str, Any] = {}
+    if not params.mpc_adapt:
+        _reset_idle_phase(state)
+        return result
+    if state.idle_phase_start_temp is None or state.idle_phase_start_ts <= 0.0:
+        _reset_idle_phase(state)
+        _log_phase_event(name, entity, "idle", "skip", reason="missing_context")
+        return result
+    temp_now = inp.current_temp_C
+    if temp_now is None:
+        _reset_idle_phase(state)
+        _log_phase_event(name, entity, "idle", "skip", reason="missing_temp")
+        return result
+    duration = now - state.idle_phase_start_ts
+    temp_drop = float(state.idle_phase_start_temp) - float(temp_now)
+    result.update({"loss_duration_s": duration, "loss_temp_delta": temp_drop})
+    if duration < PHASE_MIN_DURATION_S:
+        result["loss_phase_skipped"] = True
+        _reset_idle_phase(state)
+        _log_phase_event(
+            name, entity, "idle", "skip", duration_s=duration, reason="min_duration"
+        )
+        return result
+    duration_min = duration / 60.0
+    if duration_min <= 0.0:
+        _reset_idle_phase(state)
+        _log_phase_event(name, entity, "idle", "skip", reason="invalid_duration")
+        return result
+    if temp_drop > 0.0:
+        error_ref = None
+        if (
+            state.idle_phase_target is not None
+            and state.idle_phase_start_temp is not None
+        ):
+            error_ref = float(state.idle_phase_target) - float(
+                state.idle_phase_start_temp
+            )
+        denom = max(0.2, abs(error_ref) if error_ref is not None else temp_drop)
+        loss_candidate = (temp_drop / duration_min) / denom
+        _apply_loss_candidate(state, params, loss_candidate)
+        result["loss_candidate"] = loss_candidate
+        result["loss_phase_skipped"] = False
+        _log_phase_event(
+            name,
+            entity,
+            "idle",
+            "finalize",
+            duration_s=duration,
+            temp_delta=-temp_drop,
+            candidate=loss_candidate,
+        )
+    else:
+        _penalize_loss_estimate(state, params)
+        result["loss_candidate"] = None
+        result["loss_phase_skipped"] = False
+        _log_phase_event(
+            name,
+            entity,
+            "idle",
+            "finalize",
+            duration_s=duration,
+            temp_delta=-temp_drop,
+            candidate=None,
+        )
+    _reset_idle_phase(state)
+    return result
+
+
+def _update_phase_tracking(
+    *,
+    state: _MpcState,
+    inp: MpcInput,
+    params: MpcParams,
+    now: float,
+    prev_percent: float,
+    new_percent: float,
+) -> Dict[str, Any]:
+    if not params.mpc_adapt:
+        return {}
+
+    phase_debug: Dict[str, Any] = {}
+    name = inp.bt_name or "BT"
+    entity = inp.entity_id or "unknown"
+    prev = max(0.0, float(prev_percent))
+    new = max(0.0, float(new_percent))
+    percent_changed = abs(new - prev) >= PHASE_PERCENT_THRESHOLD
+
+    if prev <= 0.0 and new > 0.0:
+        phase_debug.update(_finalize_idle_phase(state, inp, params, now))
+        _start_heating_phase(state, inp, now, new)
+        _log_phase_event(
+            name, entity, "heating", "start", percent=new, temp=inp.current_temp_C
+        )
+    elif prev > 0.0 and new <= 0.0:
+        phase_debug.update(_finalize_heating_phase(state, inp, params, now))
+        _start_idle_phase(state, inp, now)
+        _log_phase_event(name, entity, "idle", "start", temp=inp.current_temp_C)
+    elif prev > 0.0 and new > 0.0 and percent_changed:
+        phase_debug.update(_finalize_heating_phase(state, inp, params, now))
+        _start_heating_phase(state, inp, now, new)
+        _log_phase_event(
+            name, entity, "heating", "restart", percent=new, temp=inp.current_temp_C
+        )
+    else:
+        if new > 0.0 and state.heat_phase_start_temp is None:
+            _start_heating_phase(state, inp, now, new)
+            _log_phase_event(
+                name, entity, "heating", "start", percent=new, temp=inp.current_temp_C
+            )
+        if (
+            new <= 0.0
+            and prev <= 0.0
+            and state.idle_phase_start_temp is None
+            and new == 0.0
+        ):
+            _start_idle_phase(state, inp, now)
+            _log_phase_event(name, entity, "idle", "start", temp=inp.current_temp_C)
+
+    return phase_debug
 
 
 def compute_mpc(inp: MpcInput, params: MpcParams) -> Optional[MpcOutput]:
@@ -322,13 +625,15 @@ def _compute_predictive_percent(
 
     # delta_t is target - current (passed in by caller)
     error_now = delta_t
-    dt_last = now - state.last_time if state.last_time > 0 else 0.0
 
     # step scaling: interpret params as per-minute or per-step? use per-minute * step_minutes
     step_minutes = MPC_STEP_SECONDS / 60.0
     # compute per-step effective gain & loss (safe guards)
     raw_gain = state.gain_est if state.gain_est is not None else params.mpc_thermal_gain
     raw_loss = state.loss_est if state.loss_est is not None else params.mpc_loss_coeff
+
+    raw_gain = max(params.mpc_gain_min, min(params.mpc_gain_max, raw_gain))
+    raw_loss = max(params.mpc_loss_min, min(params.mpc_loss_max, raw_loss))
 
     # scale to per-step effect (comment: choose semantics: params as per-minute)
     gain_step = float(raw_gain) * step_minutes
@@ -342,86 +647,6 @@ def _compute_predictive_percent(
 
     if gain_step < 0.0:
         gain_step = 0.0
-
-    # adapt gain/loss online (existing logic, but guard and small tweaks)
-    if (
-        params.mpc_adapt
-        and state.last_temp is not None
-        and inp.current_temp_C is not None
-        and inp.target_temp_C is not None
-        and dt_last > 0.0
-    ):
-        try:
-            error_prev = inp.target_temp_C - state.last_temp
-            error_now_current = inp.target_temp_C - inp.current_temp_C
-            last_percent = state.last_percent if state.last_percent is not None else 0.0
-            u_last = max(0.0, min(100.0, last_percent))
-
-            if state.gain_est is None:
-                state.gain_est = params.mpc_thermal_gain
-            if state.loss_est is None:
-                state.loss_est = params.mpc_loss_coeff
-
-            # only update from meaningful data
-            if error_prev != 0.0 and dt_last > 0.0:
-                # observed decay (positive if error reduced)
-                decay = error_prev - error_now_current
-                if u_last > 0.0 and decay > 0.0:
-                    # estimate gain per 100% per step (use step scale)
-                    # compute candidate as °C reduced per 100% valve over the interval
-                    # normalize to per-minute then to params units by dividing step_minutes
-                    try:
-                        gain_candidate_step = decay / (u_last / 100.0)
-                        # convert to per-minute form for storage-consistency
-                        gain_candidate = gain_candidate_step / step_minutes
-                        # exponential smoothing (alpha)
-                        state.gain_est = (
-                            1.0 - params.mpc_adapt_alpha
-                        ) * state.gain_est + params.mpc_adapt_alpha * gain_candidate
-                    except Exception:
-                        pass
-                else:
-                    # if heating did not reduce error, gently shrink gain_est (conservative)
-                    decay_ratio = 0.0
-                    try:
-                        decay_ratio = min(1.0, abs(decay) / abs(error_prev))
-                    except Exception:
-                        decay_ratio = 0.0
-                    if decay_ratio > 0.0:
-                        shrink = 1.0 - params.mpc_adapt_alpha * decay_ratio
-                        if shrink < 0.0:
-                            shrink = 0.0
-                        state.gain_est *= shrink
-
-                # loss estimate: how much error changed without heating (leak)
-                leak_raw = error_now_current - error_prev
-                try:
-                    loss_candidate = max(0.0, leak_raw / abs(error_prev) / step_minutes)
-                except Exception:
-                    loss_candidate = 0.0
-                state.loss_est = (
-                    1.0 - params.mpc_adapt_alpha
-                ) * state.loss_est + params.mpc_adapt_alpha * loss_candidate
-
-            # clamp back to safe limits
-            state.gain_est = max(
-                params.mpc_gain_min, min(params.mpc_gain_max, state.gain_est)
-            )
-            state.loss_est = max(
-                params.mpc_loss_min, min(params.mpc_loss_max, state.loss_est)
-            )
-            # recompute step values from clamped estimates
-            raw_gain = state.gain_est
-            raw_loss = state.loss_est
-            gain_step = float(raw_gain) * step_minutes
-            loss_step = float(raw_loss) * step_minutes
-            if loss_step < 0.0:
-                loss_step = 0.0
-            if loss_step > 0.9:
-                loss_step = 0.9
-        except Exception:
-            # keep old estimates on failure
-            pass
 
     # prepare MPC search
     horizon = MPC_HORIZON_STEPS
@@ -606,6 +831,7 @@ def _post_process_percent(
     target_changed = False
     name = inp.bt_name or "BT"
     entity = inp.entity_id or "unknown"
+    prev_percent = state.last_percent if state.last_percent is not None else 0.0
 
     if inp.target_temp_C is not None:
         prev_target = state.last_target_C
@@ -704,6 +930,15 @@ def _post_process_percent(
             _round_for_debug(min_eff, 2),
         )
 
+    phase_debug = _update_phase_tracking(
+        state=state,
+        inp=inp,
+        params=params,
+        now=now,
+        prev_percent=float(prev_percent),
+        new_percent=float(percent_out),
+    )
+
     trv_room_delta = None
     if inp.trv_temp_C is not None and inp.current_temp_C is not None:
         try:
@@ -727,7 +962,12 @@ def _post_process_percent(
         "trv_time_delta_s": _round_for_debug(time_delta, 1),
         "trv_room_delta": _round_for_debug(trv_room_delta, 3),
         "min_clamp_active": min_clamp_used,
+        "heating_phase_active": state.heat_phase_start_temp is not None,
+        "idle_phase_active": state.idle_phase_start_temp is not None,
     }
+
+    for key, value in phase_debug.items():
+        debug[key] = _round_for_debug(value, 4) if isinstance(value, float) else value
 
     if inp.temp_slope_K_per_min is not None:
         if state.ema_slope is None:
