@@ -2445,6 +2445,92 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
         except Exception:
             pass
 
+        # MPC telemetry: surface per-TRV adaptive state for developer tooling insight
+        try:
+            uid = getattr(self, "_unique_id", None)
+            if not uid:
+                raise ValueError("missing unique_id for MPC export")
+            prefix = f"{uid}:"
+            mpc_states = export_mpc_state_map(prefix)
+            if mpc_states:
+                def _round_val(value, digits):
+                    try:
+                        return round(float(value), digits)
+                    except Exception:
+                        return None
+
+                def _bucket_label(temp):
+                    try:
+                        return f"t{round(float(temp) * 2.0) / 2.0:.1f}"
+                    except Exception:
+                        return "tunknown"
+
+                current_bucket = _bucket_label(self.bt_target_temp)
+                summary: dict[str, Any] = {}
+                for key, payload in mpc_states.items():
+                    if not isinstance(payload, dict):
+                        continue
+                    parts = key.split(":", 2)
+                    entity_id = parts[1] if len(parts) > 1 else key
+                    bucket = parts[2] if len(parts) > 2 else "tunknown"
+                    entity_summary = summary.setdefault(
+                        entity_id, {"current_bucket": current_bucket, "buckets": {}}
+                    )
+                    bucket_data: dict[str, Any] = {}
+                    val = _round_val(payload.get("min_effective_percent"), 2)
+                    if val is not None:
+                        bucket_data["min_eff_pct"] = val
+                    val = _round_val(payload.get("gain_est"), 4)
+                    if val is not None:
+                        bucket_data["gain"] = val
+                    val = _round_val(payload.get("loss_est"), 4)
+                    if val is not None:
+                        bucket_data["loss"] = val
+                    val = _round_val(payload.get("last_percent"), 1)
+                    if val is not None:
+                        bucket_data["last_percent"] = val
+                    dead_hits = payload.get("dead_zone_hits")
+                    if isinstance(dead_hits, (int, float)):
+                        bucket_data["dead_zone_hits"] = int(dead_hits)
+                    if bucket_data:
+                        entity_summary["buckets"][bucket] = bucket_data
+                if summary:
+                    dev_specific["mpc_state_summary"] = json.dumps(summary)
+                    rep_trv = None
+                    for t in self.real_trvs.keys():
+                        mdl = str(self.real_trvs.get(t, {}).get("model", ""))
+                        if "sonoff" in mdl.lower() or "trvzb" in mdl.lower():
+                            rep_trv = t
+                            break
+                    if rep_trv is None:
+                        rep_trv = next(iter(self.real_trvs.keys()), None)
+                    if rep_trv is not None:
+                        rep_entry = summary.get(rep_trv, {})
+                        rep_bucket = None
+                        if isinstance(rep_entry, dict):
+                            rep_bucket = rep_entry.get("current_bucket", current_bucket)
+                            buckets = rep_entry.get("buckets") or {}
+                            bucket_data = buckets.get(rep_bucket)
+                            if bucket_data is None and buckets:
+                                bucket_data = next(iter(buckets.values()))
+                        else:
+                            bucket_data = None
+                        if bucket_data:
+                            val = bucket_data.get("min_eff_pct")
+                            if val is not None:
+                                dev_specific["mpc_min_eff_pct"] = val
+                            val = bucket_data.get("gain")
+                            if val is not None:
+                                dev_specific["mpc_gain"] = val
+                            val = bucket_data.get("loss")
+                            if val is not None:
+                                dev_specific["mpc_loss"] = val
+                            hits = bucket_data.get("dead_zone_hits")
+                            if isinstance(hits, (int, float)):
+                                dev_specific["mpc_dead_zone_hits"] = int(hits)
+        except Exception:
+            pass
+
         return dev_specific
 
     @property
