@@ -738,22 +738,31 @@ def _apply_dead_zone_detection(
     eval_after = max(params.deadzone_time_s, 1.0)
 
     if time_delta >= eval_after:
+        room_delta = None
+        if inp.current_temp_C is not None and inp.trv_temp_C is not None:
+            try:
+                room_delta = float(inp.trv_temp_C) - float(inp.current_temp_C)
+            except (TypeError, ValueError):
+                room_delta = None
+
         tol = max(inp.tolerance_K, 0.0)
         needs_heat = delta_t is not None and delta_t > tol
         small_command = percent_out > 0 and (
             percent_out <= params.deadzone_threshold_pct or min_clamp_active
         )
         weak_response = temp_delta is None or temp_delta <= params.deadzone_temp_delta_K
+        trv_not_hot = room_delta is None or room_delta <= params.deadzone_temp_delta_K
 
-        if small_command and needs_heat and weak_response:
+        if small_command and needs_heat and weak_response and trv_not_hot:
             state.dead_zone_hits += 1
             _LOGGER.debug(
-                "better_thermostat %s: MPC dead-zone observation (%s) hits=%s/%s temp_delta=%s command=%s%%",
+                "better_thermostat %s: MPC dead-zone observation (%s) hits=%s/%s temp_delta=%s room_delta=%s command=%s%%",
                 name,
                 entity,
                 state.dead_zone_hits,
                 params.deadzone_hits_required,
                 _round_for_debug(temp_delta, 3),
+                _round_for_debug(room_delta, 3),
                 percent_out,
             )
             if (
@@ -773,13 +782,6 @@ def _apply_dead_zone_detection(
                 )
         else:
             prev_hits = state.dead_zone_hits
-            room_delta = None
-            if inp.current_temp_C is not None and inp.trv_temp_C is not None:
-                try:
-                    room_delta = float(inp.trv_temp_C) - float(inp.current_temp_C)
-                except (TypeError, ValueError):
-                    room_delta = None
-
             heating_detected = False
             decay_reason = None
             if temp_delta is not None and temp_delta > params.deadzone_temp_delta_K:
