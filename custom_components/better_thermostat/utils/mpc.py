@@ -886,19 +886,19 @@ def compute_mpc(inp: MpcInput, params: MpcParams) -> Optional[MpcOutput]:
 
     summary_delta = delta_t if delta_t is not None else initial_delta_t
     min_eff = state.min_effective_percent
-    summary_gain = extra_debug.get("mpc_gain_Kps")
-    summary_loss = extra_debug.get("mpc_tau_s")
+    summary_gain_step = extra_debug.get("mpc_gain_step_K")
+    summary_loss_step = extra_debug.get("mpc_loss_step_K_current")
     summary_horizon = extra_debug.get("mpc_horizon")
     summary_eval = extra_debug.get("mpc_eval_count")
     summary_cost = extra_debug.get("mpc_cost")
 
     _LOGGER.debug(
-        "better_thermostat %s: mpc calibration for %s: e0=%sK gain_Kps=%s tau_s=%s horizon=%s | raw=%s%% out=%s%% min_eff=%s%% last=%s%% dead_hits=%s eval=%s cost=%s flow_cap=%sK",
+        "better_thermostat %s: mpc calibration for %s: e0=%sK gain_step=%s(K/step@100pct) loss_step=%s(K/step@|e|) horizon=%s | raw=%s%% out=%s%% min_eff=%s%% last=%s%% dead_hits=%s eval=%s cost=%s flow_cap=%sK",
         name,
         entity,
         _round_for_debug(summary_delta, 3),
-        _round_for_debug(summary_gain, 4),
-        _round_for_debug(summary_loss, 4),
+        _round_for_debug(summary_gain_step, 6),
+        _round_for_debug(summary_loss_step, 6),
         summary_horizon,
         _round_for_debug(percent, 2),
         percent_out,
@@ -1023,6 +1023,8 @@ def _compute_predictive_percent(
     state.last_temp = inp.current_temp_C
     state.last_time = now
 
+    # Zusätzlich: Verlust pro Schritt bei aktuellem Fehlerbetrag (vergleichbar zu gain_step_K)
+    loss_step_K_current = abs(error_now) * loss_step_1K_K
     mpc_debug = {
         "mpc_gain_Kps": _round_for_debug(gain_Kps, 6),
         "mpc_tau_s": _round_for_debug(tau_s, 1),
@@ -1030,7 +1032,7 @@ def _compute_predictive_percent(
         "mpc_eval_count": eval_count,
         "mpc_step_minutes": _round_for_debug(step_minutes, 3),
         "mpc_gain_step_K": _round_for_debug(gain_step_K, 6),
-        "mpc_loss_step_1K_K": _round_for_debug(loss_step_1K_K, 6),
+        "mpc_loss_step_K_current": _round_for_debug(loss_step_K_current, 6),
     }
 
     if best_cost is not None:

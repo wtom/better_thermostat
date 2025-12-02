@@ -279,7 +279,10 @@ async def control_trv(self, heater_entity_id=None):
         try:
             _source = None
             bal = None
-            if _calibration_mode == CalibrationMode.MPC_CALIBRATION:
+            if _calibration_mode in (
+                CalibrationMode.MPC_CALIBRATION,
+                CalibrationMode.HEATING_POWER_CALIBRATION,
+            ):
                 cal_bal = self.real_trvs[heater_entity_id].get("calibration_balance")
                 if (
                     isinstance(cal_bal, dict)
@@ -287,7 +290,11 @@ async def control_trv(self, heater_entity_id=None):
                     and cal_bal.get("valve_percent") is not None
                 ):
                     bal = cal_bal
-                    _source = "mpc_calibration"
+                    _source = (
+                        "mpc_calibration"
+                        if _calibration_mode == CalibrationMode.MPC_CALIBRATION
+                        else "heating_power_calibration"
+                    )
             if bal is None:
                 raw_balance = self.real_trvs[heater_entity_id].get("balance")
                 if raw_balance and raw_balance.get("valve_percent") is not None:
@@ -546,7 +553,10 @@ async def control_trv(self, heater_entity_id=None):
     try:
         _source = None
         bal = None
-        if _calibration_mode == CalibrationMode.MPC_CALIBRATION:
+        if _calibration_mode in (
+            CalibrationMode.MPC_CALIBRATION,
+            CalibrationMode.HEATING_POWER_CALIBRATION,
+        ):
             cal_bal = self.real_trvs[heater_entity_id].get("calibration_balance")
             if (
                 isinstance(cal_bal, dict)
@@ -554,7 +564,11 @@ async def control_trv(self, heater_entity_id=None):
                 and cal_bal.get("valve_percent") is not None
             ):
                 bal = cal_bal
-                _source = "mpc_calibration"
+                _source = (
+                    "mpc_calibration"
+                    if _calibration_mode == CalibrationMode.MPC_CALIBRATION
+                    else "heating_power_calibration"
+                )
         if bal is None:
             raw_balance = self.real_trvs[heater_entity_id].get("balance")
             if raw_balance and raw_balance.get("valve_percent") is not None:
