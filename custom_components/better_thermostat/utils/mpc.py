@@ -41,7 +41,7 @@ class MpcParams:
     deadzone_hits_required: int = 3
     deadzone_raise_pct: float = 2.0
     deadzone_decay_pct: float = 1.0
-    deadzone_room_delta_guard_K: float = 1.0
+    deadzone_room_delta_guard_K: float = 1.5
 
 
 @dataclass
