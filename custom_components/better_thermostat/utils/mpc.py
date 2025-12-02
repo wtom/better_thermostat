@@ -48,6 +48,7 @@ class MpcParams:
     deadzone_score_increment: float = 1.0
     deadzone_score_decay: float = 0.5
     deadzone_score_cap: float = 10.0
+    hold_tolerance_K: float = 0.2
 
 
 @dataclass
@@ -630,6 +631,35 @@ def compute_mpc(inp: MpcInput, params: MpcParams) -> Optional[MpcOutput]:
     )
 
 
+def _resolve_gain_loss(
+    state: _MpcState, params: MpcParams
+) -> Tuple[float, float, float, float]:
+    raw_gain = state.gain_est if state.gain_est is not None else params.mpc_thermal_gain
+    raw_loss = state.loss_est if state.loss_est is not None else params.mpc_loss_coeff
+
+    raw_gain = max(params.mpc_gain_min, min(params.mpc_gain_max, raw_gain))
+    raw_loss = max(params.mpc_loss_min, min(params.mpc_loss_max, raw_loss))
+
+    step_minutes = MPC_STEP_SECONDS / 60.0
+    gain_step = max(0.0, float(raw_gain) * step_minutes)
+    loss_step = max(0.0, float(raw_loss) * step_minutes)
+
+    if loss_step > 0.9:
+        loss_step = 0.9
+
+    return float(raw_gain), float(raw_loss), gain_step, loss_step
+
+
+def _compute_hold_percent(state: _MpcState, params: MpcParams) -> Optional[float]:
+    _, _, gain_step, loss_step = _resolve_gain_loss(state, params)
+    if gain_step <= 0.0 or loss_step <= 0.0:
+        return None
+    hold_percent = (loss_step / gain_step) * 100.0
+    if hold_percent <= 0.0:
+        return None
+    return min(100.0, hold_percent)
+
+
 def _compute_predictive_percent(
     inp: MpcInput, params: MpcParams, state: _MpcState, now: float, delta_t: float
 ) -> Tuple[float, Dict[str, Any]]:
@@ -640,25 +670,7 @@ def _compute_predictive_percent(
 
     # step scaling: interpret params as per-minute or per-step? use per-minute * step_minutes
     step_minutes = MPC_STEP_SECONDS / 60.0
-    # compute per-step effective gain & loss (safe guards)
-    raw_gain = state.gain_est if state.gain_est is not None else params.mpc_thermal_gain
-    raw_loss = state.loss_est if state.loss_est is not None else params.mpc_loss_coeff
-
-    raw_gain = max(params.mpc_gain_min, min(params.mpc_gain_max, raw_gain))
-    raw_loss = max(params.mpc_loss_min, min(params.mpc_loss_max, raw_loss))
-
-    # scale to per-step effect (comment: choose semantics: params as per-minute)
-    gain_step = float(raw_gain) * step_minutes
-    loss_step = float(raw_loss) * step_minutes
-
-    # clamp sensible ranges (avoid negative or >1 loss)
-    if loss_step < 0.0:
-        loss_step = 0.0
-    if loss_step > 0.9:
-        loss_step = 0.9
-
-    if gain_step < 0.0:
-        gain_step = 0.0
+    raw_gain, raw_loss, gain_step, loss_step = _resolve_gain_loss(state, params)
 
     # prepare MPC search
     horizon = MPC_HORIZON_STEPS
@@ -946,9 +958,38 @@ def _post_process_percent(
         except (TypeError, ValueError):
             delta_t = None
 
+    hold_percent: Optional[float] = None
+    hold_applied = False
+    hold_tol = max(params.hold_tolerance_K, 0.0)
+    if (
+        hold_tol > 0.0
+        and delta_t is not None
+        and delta_t <= 0.0
+        and abs(delta_t) <= hold_tol
+    ):
+        hold_percent = _compute_hold_percent(state, params)
+        if hold_percent is not None and hold_percent > 0.0 and smooth < hold_percent:
+            _LOGGER.debug(
+                "better_thermostat %s: MPC hold compensation (%s) delta_T=%s hold=%s raw=%s",
+                name,
+                entity,
+                _round_for_debug(delta_t, 3),
+                _round_for_debug(hold_percent, 2),
+                _round_for_debug(smooth, 2),
+            )
+            smooth = hold_percent
+            hold_applied = True
+
+    min_clamp_allowed = not hold_applied
     min_clamp_used = False
     min_eff = state.min_effective_percent
-    if min_eff is not None and min_eff > 0.0 and smooth > 0.0 and smooth < min_eff:
+    if (
+        min_clamp_allowed
+        and min_eff is not None
+        and min_eff > 0.0
+        and smooth > 0.0
+        and smooth < min_eff
+    ):
         smooth = min_eff
         min_clamp_used = True
         _LOGGER.debug(
@@ -974,7 +1015,8 @@ def _post_process_percent(
 
     min_eff = state.min_effective_percent
     if (
-        min_eff is not None
+        min_clamp_allowed
+        and min_eff is not None
         and min_eff > 0.0
         and percent_out > 0
         and percent_out < min_eff
@@ -1005,7 +1047,8 @@ def _post_process_percent(
 
     min_eff = state.min_effective_percent
     if (
-        min_eff is not None
+        min_clamp_allowed
+        and min_eff is not None
         and min_eff > 0.0
         and percent_out > 0
         and percent_out < min_eff
@@ -1055,6 +1098,10 @@ def _post_process_percent(
         "min_clamp_active": min_clamp_used,
         "heating_phase_active": state.heat_phase_start_temp is not None,
         "idle_phase_active": state.idle_phase_start_temp is not None,
+        "hold_percent": (
+            _round_for_debug(hold_percent, 2) if hold_percent is not None else None
+        ),
+        "hold_active": hold_applied,
     }
 
     for key, value in dead_debug.items():
