@@ -840,8 +840,6 @@ def compute_mpc(inp: MpcInput, params: MpcParams) -> Optional[MpcOutput]:
     min_eff = state.min_effective_percent
     summary_gain = extra_debug.get("mpc_gain")
     summary_loss = extra_debug.get("mpc_loss")
-    summary_lag_tau = extra_debug.get("mpc_lag_tau_s")
-    summary_du = extra_debug.get("mpc_du_max_pct")
     summary_horizon = extra_debug.get("mpc_horizon")
     summary_eval = extra_debug.get("mpc_eval_count")
     summary_cost = extra_debug.get("mpc_cost")
@@ -853,8 +851,6 @@ def compute_mpc(inp: MpcInput, params: MpcParams) -> Optional[MpcOutput]:
         _round_for_debug(summary_delta, 3),
         _round_for_debug(summary_gain, 4),
         _round_for_debug(summary_loss, 4),
-        _round_for_debug(summary_lag_tau, 1) if summary_lag_tau is not None else None,
-        _round_for_debug(summary_du, 2) if summary_du is not None else None,
         summary_horizon,
         _round_for_debug(percent, 2),
         percent_out,
@@ -985,11 +981,9 @@ def _compute_predictive_percent(
         "mpc_step_minutes": _round_for_debug(step_minutes, 3),
         "mpc_gain_step": _round_for_debug(gain_step, 6),
         "mpc_loss_step": _round_for_debug(loss_step, 6),
-        "mpc_du_max_pct": _round_for_debug(du_max, 2) if du_max > 0.0 else None,
     }
 
     if lag_tau > 0.0:
-        mpc_debug["mpc_lag_tau_s"] = _round_for_debug(lag_tau, 1)
         mpc_debug["mpc_lag_alpha"] = _round_for_debug(lag_alpha, 4)
 
     if best_cost is not None:
