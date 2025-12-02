@@ -27,8 +27,8 @@ class MpcParams:
     min_update_interval_s: float = 60.0
     mpc_thermal_gain: float = 0.02
     mpc_loss_coeff: float = 0.015
-    mpc_control_penalty: float = 0.00005
-    mpc_change_penalty: float = 0.02
+    mpc_control_penalty: float = 0.00002
+    mpc_change_penalty: float = 0.01
     mpc_adapt: bool = True
     mpc_gain_min: float = 0.005
     mpc_gain_max: float = 0.5
@@ -49,6 +49,8 @@ class MpcParams:
     deadzone_score_decay: float = 0.5
     deadzone_score_cap: float = 10.0
     hold_tolerance_K: float = 0.2
+    gain_phase_timeout_s: float = 1800.0
+    idle_phase_timeout_s: float = 1800.0
 
 
 @dataclass
@@ -252,11 +254,15 @@ def _apply_gain_candidate(
     state.gain_est = max(params.mpc_gain_min, min(params.mpc_gain_max, blended))
 
 
-def _penalize_gain_estimate(state: _MpcState, params: MpcParams) -> None:
+def _penalize_gain_estimate(
+    state: _MpcState, params: MpcParams, *, penalty_scale: float = 1.0
+) -> None:
     if state.gain_est is None:
         state.gain_est = params.mpc_thermal_gain
-    shrink = max(0.0, 1.0 - min(max(params.mpc_adapt_alpha, 0.0), 1.0))
-    state.gain_est *= shrink
+    alpha = min(max(params.mpc_adapt_alpha, 0.0), 1.0)
+    alpha = min(1.0, alpha * max(penalty_scale, 0.0))
+    target = max(params.mpc_gain_min, min(params.mpc_gain_max, params.mpc_gain_min))
+    state.gain_est = (1.0 - alpha) * state.gain_est + alpha * target
     state.gain_est = max(params.mpc_gain_min, min(params.mpc_gain_max, state.gain_est))
 
 
@@ -362,9 +368,15 @@ def _finalize_heating_phase(
             candidate=gain_candidate,
         )
     else:
-        _penalize_gain_estimate(state, params)
+        duration_scale = 0.0
+        if PHASE_MIN_DURATION_S > 0.0:
+            duration_scale = min(1.5, max(0.0, duration / PHASE_MIN_DURATION_S - 1.0))
+        percent_scale = min(2.0, max(0.0, percent_used / 20.0))
+        penalty_scale = 1.0 + duration_scale + percent_scale
+        _penalize_gain_estimate(state, params, penalty_scale=penalty_scale)
         result["gain_candidate"] = None
         result["gain_phase_skipped"] = False
+        result["gain_penalty_scale"] = penalty_scale
         _log_phase_event(
             name,
             entity,
@@ -373,6 +385,7 @@ def _finalize_heating_phase(
             duration_s=duration,
             temp_delta=temp_gain,
             percent=percent_used,
+            penalty=penalty_scale,
             candidate=None,
         )
     _reset_heat_phase(state)
@@ -501,6 +514,43 @@ def _update_phase_tracking(
         ):
             _start_idle_phase(state, inp, now)
             _log_phase_event(name, entity, "idle", "start", temp=inp.current_temp_C)
+
+    heat_timeout = max(params.gain_phase_timeout_s, 0.0)
+    if (
+        heat_timeout > 0.0
+        and state.heat_phase_start_ts > 0.0
+        and state.heat_phase_start_temp is not None
+        and new > 0.0
+    ):
+        heat_age = now - state.heat_phase_start_ts
+        if heat_age >= heat_timeout:
+            phase_debug.update(_finalize_heating_phase(state, inp, params, now))
+            phase_debug["heat_phase_timeout"] = heat_age
+            _log_phase_event(
+                name,
+                entity,
+                "heating",
+                "timeout",
+                age_s=heat_age,
+                timeout_s=heat_timeout,
+            )
+            _start_heating_phase(state, inp, now, new)
+
+    idle_timeout = max(params.idle_phase_timeout_s, 0.0)
+    if (
+        idle_timeout > 0.0
+        and state.idle_phase_start_ts > 0.0
+        and state.idle_phase_start_temp is not None
+        and new <= 0.0
+    ):
+        idle_age = now - state.idle_phase_start_ts
+        if idle_age >= idle_timeout:
+            phase_debug.update(_finalize_idle_phase(state, inp, params, now))
+            phase_debug["idle_phase_timeout"] = idle_age
+            _log_phase_event(
+                name, entity, "idle", "timeout", age_s=idle_age, timeout_s=idle_timeout
+            )
+            _start_idle_phase(state, inp, now)
 
     return phase_debug
 
@@ -941,7 +991,7 @@ def _post_process_percent(
         if prev_target is not None:
             try:
                 target_changed = (
-                    abs(float(inp.target_temp_C) - float(prev_target)) >= 0.05
+                    abs(float(inp.target_temp_C) - float(prev_target)) >= 0.1
                 )
             except (TypeError, ValueError):
                 target_changed = False
