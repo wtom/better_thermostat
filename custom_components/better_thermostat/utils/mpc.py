@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -16,6 +17,8 @@ MPC_STEP_SECONDS = 300.0
 MPC_HORIZON_STEPS = 12
 PHASE_MIN_DURATION_S = 300.0
 PHASE_PERCENT_THRESHOLD = 1.0
+PHASE_PERCENT_AVG_WINDOW_S = 180.0
+PHASE_MIN_EFFECTIVE_PERCENT = 2.0
 
 
 @dataclass
@@ -27,14 +30,17 @@ class MpcParams:
     min_update_interval_s: float = 60.0
     mpc_thermal_gain: float = 0.02
     mpc_loss_coeff: float = 0.015
-    mpc_control_penalty: float = 0.00002
-    mpc_change_penalty: float = 0.01
+    mpc_control_penalty: float = 0.00002  # tuned for u in [0,1]; ~1e-5..1e-3 typical
+    mpc_change_penalty: float = 0.01  # stronger penalty slows modulation; default ~1e-2
     mpc_adapt: bool = True
     mpc_gain_min: float = 0.005
     mpc_gain_max: float = 0.5
     mpc_loss_min: float = 0.0
     mpc_loss_max: float = 0.05
     mpc_adapt_alpha: float = 0.1
+    mpc_gain_use_rls: bool = True
+    mpc_gain_rls_lambda: float = 0.98
+    mpc_gain_rls_cov0: float = 10.0
     deadzone_threshold_pct: float = 20.0
     deadzone_temp_delta_K: float = 0.2
     deadzone_time_s: float = 300.0
@@ -51,6 +57,8 @@ class MpcParams:
     hold_tolerance_K: float = 0.2
     gain_phase_timeout_s: float = 1800.0
     idle_phase_timeout_s: float = 1800.0
+    mpc_lag_tau_s: float = 1800.0
+    du_max_pct: float = 20.0  # per-step rate limit for MPC candidate changes
 
 
 @dataclass
@@ -93,6 +101,12 @@ class _MpcState:
     heat_phase_start_temp: Optional[float] = None
     heat_phase_start_ts: float = 0.0
     heat_phase_percent: Optional[float] = None
+    heat_phase_avg_sum: float = 0.0
+    heat_phase_avg_dt: float = 0.0
+    heat_phase_avg_last_ts: float = 0.0
+    heat_phase_last_percent: Optional[float] = None
+    gain_rls_theta: Optional[float] = None
+    gain_rls_cov: Optional[float] = None
     idle_phase_start_temp: Optional[float] = None
     idle_phase_start_ts: float = 0.0
     idle_phase_target: Optional[float] = None
@@ -233,6 +247,10 @@ def _reset_heat_phase(state: _MpcState) -> None:
     state.heat_phase_start_temp = None
     state.heat_phase_start_ts = 0.0
     state.heat_phase_percent = None
+    state.heat_phase_avg_sum = 0.0
+    state.heat_phase_avg_dt = 0.0
+    state.heat_phase_avg_last_ts = 0.0
+    state.heat_phase_last_percent = None
 
 
 def _reset_idle_phase(state: _MpcState) -> None:
@@ -246,9 +264,13 @@ def _blend_estimate(current: Optional[float], candidate: float, alpha: float) ->
     return (1.0 - alpha) * base + alpha * candidate
 
 
-def _apply_gain_candidate(
-    state: _MpcState, params: MpcParams, candidate: float
-) -> None:
+def _apply_gain_candidate(state, params, candidate):
+    # reject unrealistic spikes
+    if candidate <= 0 or candidate < 0.1 * (state.gain_est or params.mpc_thermal_gain):
+        # gentle shrink instead of immediate jump
+        _penalize_gain_estimate(state, params, penalty_scale=0.5)
+        return
+    # standard blend
     alpha = min(max(params.mpc_adapt_alpha, 0.0), 1.0)
     blended = _blend_estimate(state.gain_est, candidate, alpha)
     state.gain_est = max(params.mpc_gain_min, min(params.mpc_gain_max, blended))
@@ -291,6 +313,10 @@ def _start_heating_phase(
     state.heat_phase_start_temp = float(inp.current_temp_C)
     state.heat_phase_start_ts = now
     state.heat_phase_percent = float(percent)
+    state.heat_phase_avg_sum = 0.0
+    state.heat_phase_avg_dt = 0.0
+    state.heat_phase_avg_last_ts = now
+    state.heat_phase_last_percent = float(percent)
 
 
 def _start_idle_phase(state: _MpcState, inp: MpcInput, now: float) -> None:
@@ -300,6 +326,74 @@ def _start_idle_phase(state: _MpcState, inp: MpcInput, now: float) -> None:
     state.idle_phase_start_temp = float(inp.current_temp_C)
     state.idle_phase_start_ts = now
     state.idle_phase_target = inp.target_temp_C
+
+
+def _update_gain_with_rls(
+    state: _MpcState,
+    params: MpcParams,
+    *,
+    percent_used: float,
+    duration_min: float,
+    temp_gain: float,
+) -> Tuple[bool, Optional[float]]:
+    if not params.mpc_gain_use_rls:
+        return False, None
+    if duration_min <= 0.0 or temp_gain <= 0.0:
+        return False, None
+    u = percent_used / 100.0
+    if u <= 0.0:
+        return False, None
+    lam = min(max(params.mpc_gain_rls_lambda, 0.1), 1.0)
+    theta = state.gain_rls_theta
+    if theta is None:
+        theta = params.mpc_thermal_gain
+    P = state.gain_rls_cov
+    if P is None or P <= 0.0:
+        P = max(params.mpc_gain_rls_cov0, 1e-6)
+    y = temp_gain / duration_min
+    P_phi = P * u
+    denom = lam + u * P_phi
+    if denom <= 0.0:
+        return False, None
+    K = P_phi / denom
+    theta = theta + K * (y - u * theta)
+    theta = max(params.mpc_gain_min, min(params.mpc_gain_max, theta))
+    P = (P - K * u * P) / lam
+    P = max(1e-6, min(1e6, P))
+    state.gain_rls_theta = theta
+    state.gain_rls_cov = P
+    state.gain_est = theta
+    return True, theta
+
+
+def _record_heat_phase_percent(
+    state: _MpcState, percent: Optional[float], now: float
+) -> None:
+    if state.heat_phase_start_ts <= 0.0 or state.heat_phase_avg_last_ts <= 0.0:
+        return
+    if percent is None and state.heat_phase_last_percent is None:
+        return
+    window_end = state.heat_phase_start_ts + PHASE_PERCENT_AVG_WINDOW_S
+    sample_end = min(now, window_end)
+    last_ts = state.heat_phase_avg_last_ts
+    last_percent = state.heat_phase_last_percent
+    if last_percent is not None and sample_end > last_ts:
+        dt = sample_end - last_ts
+        state.heat_phase_avg_sum += last_percent * dt
+        state.heat_phase_avg_dt += dt
+    state.heat_phase_avg_last_ts = sample_end
+    if percent is not None:
+        state.heat_phase_last_percent = float(percent)
+
+
+def _compute_heat_phase_percent_used(state: _MpcState) -> float:
+    if state.heat_phase_avg_dt > 0.0:
+        return max(0.0, state.heat_phase_avg_sum / state.heat_phase_avg_dt)
+    if state.heat_phase_percent is not None:
+        return max(0.0, float(state.heat_phase_percent))
+    if state.heat_phase_last_percent is not None:
+        return max(0.0, float(state.heat_phase_last_percent))
+    return 0.0
 
 
 def _finalize_heating_phase(
@@ -326,7 +420,8 @@ def _finalize_heating_phase(
         return result
     duration = now - state.heat_phase_start_ts
     temp_gain = float(temp_now) - float(state.heat_phase_start_temp)
-    percent_used = max(0.0, float(state.heat_phase_percent))
+    _record_heat_phase_percent(state, state.heat_phase_last_percent, now)
+    percent_used = _compute_heat_phase_percent_used(state)
     result.update(
         {
             "gain_duration_s": duration,
@@ -334,7 +429,7 @@ def _finalize_heating_phase(
             "gain_percent_used": percent_used,
         }
     )
-    if duration < PHASE_MIN_DURATION_S or percent_used <= 0.0:
+    if duration < PHASE_MIN_DURATION_S or percent_used <= PHASE_MIN_EFFECTIVE_PERCENT:
         result["gain_phase_skipped"] = True
         _reset_heat_phase(state)
         _log_phase_event(
@@ -344,7 +439,7 @@ def _finalize_heating_phase(
             "skip",
             duration_s=duration,
             percent=percent_used,
-            reason="min_duration",
+            reason="min_duration" if duration < PHASE_MIN_DURATION_S else "min_percent",
         )
         return result
     duration_min = duration / 60.0
@@ -354,7 +449,17 @@ def _finalize_heating_phase(
         return result
     if temp_gain > 0.0:
         gain_candidate = (temp_gain / duration_min) / (percent_used / 100.0)
-        _apply_gain_candidate(state, params, gain_candidate)
+        applied_rls, rls_gain = _update_gain_with_rls(
+            state,
+            params,
+            percent_used=percent_used,
+            duration_min=duration_min,
+            temp_gain=temp_gain,
+        )
+        if applied_rls and rls_gain is not None:
+            result["gain_rls"] = rls_gain
+        else:
+            _apply_gain_candidate(state, params, gain_candidate)
         result["gain_candidate"] = gain_candidate
         result["gain_phase_skipped"] = False
         _log_phase_event(
@@ -366,6 +471,7 @@ def _finalize_heating_phase(
             temp_delta=temp_gain,
             percent=percent_used,
             candidate=gain_candidate,
+            rls=applied_rls,
         )
     else:
         duration_scale = 0.0
@@ -651,17 +757,21 @@ def compute_mpc(inp: MpcInput, params: MpcParams) -> Optional[MpcOutput]:
     min_eff = state.min_effective_percent
     summary_gain = extra_debug.get("mpc_gain")
     summary_loss = extra_debug.get("mpc_loss")
+    summary_lag_tau = extra_debug.get("mpc_lag_tau_s")
+    summary_du = extra_debug.get("mpc_du_max_pct")
     summary_horizon = extra_debug.get("mpc_horizon")
     summary_eval = extra_debug.get("mpc_eval_count")
     summary_cost = extra_debug.get("mpc_cost")
 
     _LOGGER.debug(
-        "better_thermostat %s: mpc calibration for %s: e0=%sK gain=%s loss=%s horizon=%s | raw=%s%% out=%s%% min_eff=%s%% last=%s%% dead_hits=%s eval=%s cost=%s flow_cap=%sK",
+        "better_thermostat %s: mpc calibration for %s: e0=%sK gain=%s loss=%s lag_tau=%s du_max=%s horizon=%s | raw=%s%% out=%s%% min_eff=%s%% last=%s%% dead_hits=%s eval=%s cost=%s flow_cap=%sK",
         name,
         entity,
         _round_for_debug(summary_delta, 3),
         _round_for_debug(summary_gain, 4),
         _round_for_debug(summary_loss, 4),
+        _round_for_debug(summary_lag_tau, 1) if summary_lag_tau is not None else None,
+        _round_for_debug(summary_du, 2) if summary_du is not None else None,
         summary_horizon,
         _round_for_debug(percent, 2),
         percent_out,
@@ -717,16 +827,32 @@ def _compute_predictive_percent(
 
     # delta_t is target - current (passed in by caller)
     error_now = delta_t
+    assert inp.target_temp_C is not None
+    assert inp.current_temp_C is not None
 
     # step scaling: interpret params as per-minute or per-step? use per-minute * step_minutes
-    step_minutes = MPC_STEP_SECONDS / 60.0
+    step_seconds = MPC_STEP_SECONDS
+    step_minutes = step_seconds / 60.0
     raw_gain, raw_loss, gain_step, loss_step = _resolve_gain_loss(state, params)
+
+    lag_tau = max(params.mpc_lag_tau_s, 0.0)
+    if lag_tau > 0.0:
+        lag_alpha = 1.0 - math.exp(-step_seconds / lag_tau)
+        lag_alpha = max(0.0, min(1.0, lag_alpha))
+    else:
+        lag_alpha = 0.0
+
+    setpoint = float(inp.target_temp_C)
+    current_temp = float(inp.current_temp_C)
+    # loss_step already encodes the passive cooling per MPC step; clamp for stability
+    loss_alpha = max(0.0, min(1.0, loss_step))
 
     # prepare MPC search
     horizon = MPC_HORIZON_STEPS
     control_pen = max(0.0, float(params.mpc_control_penalty))
     change_pen = max(0.0, float(params.mpc_change_penalty))
     last_percent = state.last_percent if state.last_percent is not None else None
+    du_max = max(params.du_max_pct, 0.0)
 
     best_percent = 0.0
     best_cost = None
@@ -734,15 +860,23 @@ def _compute_predictive_percent(
 
     # iterate candidates (coarse grid ok). keep candidate in 0..100
     for candidate in range(0, 101, 2):
+        if last_percent is not None and du_max > 0.0:
+            if abs(candidate - last_percent) > du_max:
+                continue
         u = candidate / 100.0
         future_error = error_now if error_now is not None else 0.0
+        pred_temp = current_temp
         cost = 0.0
         # simulate horizon with per-step dynamics:
         for _ in range(horizon):
-            # passive drift (cooling toward setpoint) reduces |error|
-            future_error = future_error * (1.0 - loss_step)
-            # heating effect (reduces error when positive)
-            future_error = future_error - gain_step * u
+            if lag_tau > 0.0:
+                passive_term = 1.0 - (1.0 - lag_alpha) * (1.0 - loss_alpha)
+            else:
+                passive_term = loss_alpha
+            passive_term = max(0.0, min(1.0, passive_term))
+            pred_temp += -(pred_temp - setpoint) * passive_term
+            pred_temp += gain_step * u
+            future_error = setpoint - pred_temp
             cost += future_error * future_error
             eval_count += 1
 
@@ -768,7 +902,12 @@ def _compute_predictive_percent(
         "mpc_step_minutes": _round_for_debug(step_minutes, 3),
         "mpc_gain_step": _round_for_debug(gain_step, 6),
         "mpc_loss_step": _round_for_debug(loss_step, 6),
+        "mpc_du_max_pct": _round_for_debug(du_max, 2) if du_max > 0.0 else None,
     }
+
+    if lag_tau > 0.0:
+        mpc_debug["mpc_lag_tau_s"] = _round_for_debug(lag_tau, 1)
+        mpc_debug["mpc_lag_alpha"] = _round_for_debug(lag_alpha, 4)
 
     if best_cost is not None:
         mpc_debug["mpc_cost"] = _round_for_debug(best_cost, 6)
@@ -1087,6 +1226,9 @@ def _post_process_percent(
             entity,
             _round_for_debug(min_eff, 2),
         )
+
+    if state.heat_phase_start_ts > 0.0 and state.heat_phase_start_temp is not None:
+        _record_heat_phase_percent(state, float(percent_out), now)
 
     min_clamp_for_dead_zone = min_clamp_used
     percent_out, temp_delta, time_delta, dead_debug = _apply_dead_zone_detection(
