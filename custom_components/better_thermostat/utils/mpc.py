@@ -132,6 +132,15 @@ class MpcState:
     last_u_pct: Optional[float] = None
 
 
+@dataclass
+class MpcResult:
+    """Legacy-friendly result wrapper for calibration code paths."""
+    valve_percent: int
+    flow_cap_K: Optional[float] = None
+    setpoint_eff_C: Optional[float] = None
+    debug: Optional[Dict[str, Any]] = None
+
+
 # ---------- Persistent state registry ----------
 
 _MPC_STATE_REGISTRY: Dict[str, MpcState] = {}
@@ -834,10 +843,27 @@ def compute_mpc_output(
 
 # Legacy alias for backward compatibility
 def compute_mpc(
-    inp: MpcInput, params: MpcParams, state: Optional[MpcState], now_s: float
-) -> Tuple[int, Dict[str, Any]]:
+    inp: MpcInput,
+    params: MpcParams,
+    state: Optional[MpcState] = None,
+    now_s: Optional[float] = None,
+    *args: Any,
+) -> MpcResult:
     """Legacy name mapping to `compute_mpc_percent`.
 
     Returns (valve_percent, debug_dict).
     """
-    return compute_mpc_percent(inp, params, state, now_s)
+    # Accept legacy extra kwargs silently
+    _ = args
+    if now_s is None:
+        try:
+            ts = float(__import__("time").time())
+        except (TypeError, ValueError):
+            ts = 0.0
+    else:
+        try:
+            ts = float(now_s)
+        except (TypeError, ValueError):
+            ts = 0.0
+    pct, dbg = compute_mpc_percent(inp, params, state, ts)
+    return MpcResult(valve_percent=int(pct), flow_cap_K=None, setpoint_eff_C=None, debug=dbg)
