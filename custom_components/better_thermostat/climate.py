@@ -104,10 +104,12 @@ from .utils.const import (
     CalibrationMode,
     SERVICE_RESET_HEATING_POWER,
     SERVICE_RESET_PID_LEARNINGS,
+    SERVICE_RESET_MPC_STATE,
     SERVICE_RESTORE_SAVED_TARGET_TEMPERATURE,
     SERVICE_SET_TEMP_TARGET_TEMPERATURE,
     SERVICE_SET_ECO_MODE,
     BETTERTHERMOSTAT_RESET_PID_SCHEMA,
+    BETTERTHERMOSTAT_RESET_MPC_SCHEMA,
     SUPPORT_FLAGS,
     VERSION,
 )
@@ -121,7 +123,14 @@ from .balance import (
     import_states as balance_import_states,
     reset_balance_state as balance_reset_state,
 )
-from .utils.mpc import export_mpc_state_map, import_mpc_state_map
+from .utils.mpc import (
+    apply_mpc_state_overrides,
+    clear_mpc_dead_zone_state,
+    export_mpc_state_map,
+    import_mpc_state_map,
+    list_mpc_state_keys,
+    remove_mpc_state,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -197,6 +206,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
         SERVICE_RESET_PID_LEARNINGS,
         BETTERTHERMOSTAT_RESET_PID_SCHEMA,
         "reset_pid_learnings_service",
+    )
+    platform.async_register_entity_service(
+        SERVICE_RESET_MPC_STATE,
+        BETTERTHERMOSTAT_RESET_MPC_SCHEMA,
+        "reset_mpc_state_service",
     )
 
     async_add_entities(
@@ -3495,6 +3509,106 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
         except Exception as e:
             _LOGGER.debug(
                 "better_thermostat %s: reset_pid_learnings_service error: %s",
+                self.device_name,
+                e,
+            )
+
+    async def reset_mpc_state_service(
+        self,
+        trv_entity_id: str | None = None,
+        target_bucket: str | None = None,
+        reset_all: bool = False,
+        clear_dead_zone: bool = False,
+        gain_est: float | None = None,
+        loss_est: float | None = None,
+        min_effective_percent: float | None = None,
+    ) -> None:
+        """Entity service: reset or override MPC adaptive states for this entity."""
+
+        try:
+            prefix = f"{self._unique_id}:"
+            bucket = target_bucket.strip() if isinstance(target_bucket, str) else None
+            trv_filter = (
+                trv_entity_id.strip() if isinstance(trv_entity_id, str) else None
+            )
+
+            keys = list_mpc_state_keys(
+                prefix=prefix, entity_id=trv_filter, bucket=bucket
+            )
+            if not keys:
+                _LOGGER.debug(
+                    "better_thermostat %s: reset_mpc_state_service found no entries (trv=%s bucket=%s)",
+                    self.device_name,
+                    trv_filter,
+                    bucket,
+                )
+                return
+
+            overrides_requested = any(
+                value is not None
+                for value in (gain_est, loss_est, min_effective_percent)
+            )
+            if not (reset_all or clear_dead_zone or overrides_requested):
+                reset_all = True
+
+            removed = 0
+            if reset_all:
+                for key in keys:
+                    if remove_mpc_state(key):
+                        removed += 1
+                if removed:
+                    _LOGGER.info(
+                        "better_thermostat %s: reset_mpc_state_service removed %d MPC state(s) (trv=%s bucket=%s)",
+                        self.device_name,
+                        removed,
+                        trv_filter,
+                        bucket,
+                    )
+
+            cleared_dead_zone = 0
+            if clear_dead_zone:
+                for key in keys:
+                    if clear_mpc_dead_zone_state(key):
+                        cleared_dead_zone += 1
+                if cleared_dead_zone:
+                    _LOGGER.info(
+                        "better_thermostat %s: reset_mpc_state_service cleared dead-zone tracking for %d state(s) (trv=%s bucket=%s)",
+                        self.device_name,
+                        cleared_dead_zone,
+                        trv_filter,
+                        bucket,
+                    )
+
+            applied = 0
+            if overrides_requested:
+                overrides = {
+                    "gain_est": gain_est,
+                    "loss_est": loss_est,
+                    "min_effective_percent": min_effective_percent,
+                }
+                for key in keys:
+                    if apply_mpc_state_overrides(key, **overrides):
+                        applied += 1
+                if applied:
+                    _LOGGER.info(
+                        "better_thermostat %s: reset_mpc_state_service applied manual overrides to %d state(s) (trv=%s bucket=%s gain=%s loss=%s min_eff=%s)",
+                        self.device_name,
+                        applied,
+                        trv_filter,
+                        bucket,
+                        gain_est,
+                        loss_est,
+                        min_effective_percent,
+                    )
+
+            if removed or cleared_dead_zone or applied:
+                try:
+                    self._schedule_save_mpc_states()
+                except Exception:
+                    pass
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.debug(
+                "better_thermostat %s: reset_mpc_state_service error: %s",
                 self.device_name,
                 e,
             )

@@ -182,6 +182,10 @@
                 "set_eco_mode": {
                         "name": "Set ECO Mode",
                         "description": "Enable or disable ECO mode."
+                },
+                "reset_mpc_state": {
+                        "name": "Reset MPC state",
+                        "description": "Clear or override the predictive controller learnings for this thermostat."
                 }
         }
 }

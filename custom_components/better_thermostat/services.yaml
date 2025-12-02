@@ -114,3 +114,60 @@ reset_pid_learnings:
     entity:
       domain: climate
       integration: better_thermostat
+
+reset_mpc_state:
+  name: Reset MPC state
+  description: Clear or override MPC adaptive learnings for this Better Thermostat entity.
+  fields:
+    trv_entity_id:
+      name: TRV entity id
+      description: Limit the reset to a specific TRV entity id (as defined in the heater list).
+      example: climate.living_room_valve
+      required: false
+    target_bucket:
+      name: Target bucket
+      description: Optional bucket filter (e.g. t21.0). Leave empty to touch all buckets for the TRV/entity.
+      required: false
+    reset_all:
+      name: Remove stored state
+      description: Delete matching MPC state entries instead of only overriding values. If no other option is provided, the service defaults to a full reset.
+      required: false
+      selector:
+        boolean: {}
+    clear_dead_zone:
+      name: Clear dead-zone tracking
+      description: Reset dead-zone hits/score and drop any learned min_effective_percent clamp without deleting other MPC data.
+      required: false
+      selector:
+        boolean: {}
+    gain_est:
+      name: Override gain estimate
+      description: Set a fixed thermal gain estimate (K/min at 100 % valve).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.001
+    loss_est:
+      name: Override loss estimate
+      description: Set a fixed thermal loss coefficient (relative °C/min).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 0.2
+          step: 0.0001
+    min_effective_percent:
+      name: Override minimum effective percent
+      description: Force a minimum valve percentage that bypasses dead-zone detection (0-100%).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.5
+  target:
+    entity:
+      domain: climate
+      integration: better_thermostat

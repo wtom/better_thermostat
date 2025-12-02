@@ -131,6 +131,79 @@ _STATE_EXPORT_FIELDS = (
 )
 
 
+def list_mpc_state_keys(
+    *,
+    prefix: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    bucket: Optional[str] = None,
+) -> list[str]:
+    """Return MPC state keys filtered by prefix/entity/bucket."""
+
+    keys: list[str] = []
+    for key in list(_MPC_STATES.keys()):
+        if prefix is not None and not key.startswith(prefix):
+            continue
+        if entity_id is not None or bucket is not None:
+            _, ent, buck = _split_mpc_key(key)
+            if entity_id is not None and ent != entity_id:
+                continue
+            if bucket is not None and buck != bucket:
+                continue
+        keys.append(key)
+    return keys
+
+
+def remove_mpc_state(key: str) -> bool:
+    """Remove a stored MPC state entry for the given key."""
+
+    return _MPC_STATES.pop(key, None) is not None
+
+
+def clear_mpc_dead_zone_state(key: str) -> bool:
+    """Reset dead-zone tracking data for a specific MPC state."""
+
+    state = _MPC_STATES.get(key)
+    if state is None:
+        return False
+    state.dead_zone_hits = 0
+    state.dead_zone_score = 0.0
+    state.min_effective_percent = None
+    state.last_trv_temp = None
+    state.last_trv_temp_ts = 0.0
+    state.last_dead_zone_room_temp = None
+    state.last_dead_zone_room_ts = 0.0
+    state.last_dead_zone_room_delta = None
+    return True
+
+
+def apply_mpc_state_overrides(
+    key: str,
+    *,
+    gain_est: Optional[float] = None,
+    loss_est: Optional[float] = None,
+    min_effective_percent: Optional[float] = None,
+) -> bool:
+    """Apply manual overrides to a stored MPC state."""
+
+    if gain_est is None and loss_est is None and min_effective_percent is None:
+        return False
+    state = _MPC_STATES.setdefault(key, _MpcState())
+    changed = False
+    if gain_est is not None:
+        state.gain_est = float(gain_est)
+        state.gain_rls_theta = float(gain_est)
+        state.gain_rls_cov = None
+        changed = True
+    if loss_est is not None:
+        state.loss_est = float(loss_est)
+        changed = True
+    if min_effective_percent is not None:
+        clamped = max(0.0, min(100.0, float(min_effective_percent)))
+        state.min_effective_percent = clamped
+        changed = True
+    return changed
+
+
 def _serialize_state(state: _MpcState) -> Dict[str, Any]:
     payload: Dict[str, Any] = {}
     for attr in _STATE_EXPORT_FIELDS:
@@ -418,6 +491,11 @@ def _finalize_heating_phase(
         _reset_heat_phase(state)
         _log_phase_event(name, entity, "heating", "skip", reason="missing_temp")
         return result
+    if inp.window_open:
+        result["gain_phase_skipped"] = True
+        _reset_heat_phase(state)
+        _log_phase_event(name, entity, "heating", "skip", reason="window_open")
+        return result
     duration = now - state.heat_phase_start_ts
     temp_gain = float(temp_now) - float(state.heat_phase_start_temp)
     _record_heat_phase_percent(state, state.heat_phase_last_percent, now)
@@ -515,6 +593,11 @@ def _finalize_idle_phase(
     if temp_now is None:
         _reset_idle_phase(state)
         _log_phase_event(name, entity, "idle", "skip", reason="missing_temp")
+        return result
+    if inp.window_open:
+        result["loss_phase_skipped"] = True
+        _reset_idle_phase(state)
+        _log_phase_event(name, entity, "idle", "skip", reason="window_open")
         return result
     duration = now - state.idle_phase_start_ts
     temp_drop = float(state.idle_phase_start_temp) - float(temp_now)
