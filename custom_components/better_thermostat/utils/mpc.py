@@ -1,4 +1,22 @@
-"""Lightweight MPC helper independent from balance logic."""
+"""Lightweight MPC helper using a unified physical model.
+
+Einheitliches thermisches Modell (ohne Außentemperatur explizit):
+
+    error_next = error - (error / tau_s) * dt - (gain_Kps * u) * dt
+
+Dabei gilt:
+- error = (target - current) in K
+- tau_s in Sekunden (Zeitkonstante der passiven Annäherung)
+- gain_Kps in K/s pro u=1 (stellgrößen-normalisierter Heiz-Gewinn)
+- u in [0, 1] (Ventilöffnung 0..100%)
+
+Dieses Modell wird konsistent verwendet für:
+- MPC Vorhersage (Kandidatensuche)
+- Hold-Berechnung (hieraus folgt meist: kein zusätzlicher Hold nötig)
+- Gain-/Tau-Adaption aus Phasen (Heizen/Idle)
+
+Debug-Werte sind so skaliert, dass alle Größen physikalisch interpretierbar sind.
+"""
 
 from __future__ import annotations
 
@@ -28,16 +46,29 @@ class MpcParams:
     cap_max_K: float = 0.8
     percent_hysteresis_pts: float = 0.5
     min_update_interval_s: float = 60.0
-    mpc_thermal_gain: float = 0.02
-    mpc_loss_coeff: float = 0.015
-    mpc_control_penalty: float = 0.00002  # tuned for u in [0,1]; ~1e-5..1e-3 typical
-    mpc_change_penalty: float = 0.01  # stronger penalty slows modulation; default ~1e-2
+
+    # Einheitliches Modell-Parametertuning
+    # gain_Kps: anfänglicher Heizzuwachs in K/s bei u=1
+    mpc_thermal_gain_Kps: float = 2.0e-4  # ~0.012 K/min
+    # tau_s: anfängliche Zeitkonstante in Sekunden
+    mpc_tau_s: float = 1800.0
+
+    # Kosten-Penalties (u ist normiert [0,1])
+    mpc_control_penalty: float = 0.0
+    mpc_change_penalty: float = 0.01
+
+    # Online-Adaption aktivieren
     mpc_adapt: bool = True
-    mpc_gain_min: float = 0.005
-    mpc_gain_max: float = 0.5
-    mpc_loss_min: float = 0.0
-    mpc_loss_max: float = 0.05
+    # Grenzen für Schätzer
+    mpc_gain_min_Kps: float = 1.0e-5
+    mpc_gain_max_Kps: float = 5.0e-3
+    mpc_tau_min_s: float = 600.0
+    mpc_tau_max_s: float = 4 * 3600.0
+
+    # Glättung der Adaption
     mpc_adapt_alpha: float = 0.1
+
+    # Optionaler RLS für Gain-Schätzung
     mpc_gain_use_rls: bool = True
     mpc_gain_rls_lambda: float = 0.98
     mpc_gain_rls_cov0: float = 10.0
@@ -89,8 +120,8 @@ class _MpcState:
     last_update_ts: float = 0.0
     last_target_C: Optional[float] = None
     ema_slope: Optional[float] = None
-    gain_est: Optional[float] = None
-    loss_est: Optional[float] = None
+    gain_est: Optional[float] = None  # interpretiert als gain_Kps (K/s)
+    loss_est: Optional[float] = None  # interpretiert als tau_s (s)
     last_temp: Optional[float] = None
     last_time: float = 0.0
     last_trv_temp: Optional[float] = None
@@ -195,6 +226,7 @@ def apply_mpc_state_overrides(
         state.gain_rls_cov = None
         changed = True
     if loss_est is not None:
+        # loss_est wird als tau_s interpretiert
         state.loss_est = float(loss_est)
         changed = True
     if min_effective_percent is not None:
@@ -339,42 +371,50 @@ def _blend_estimate(current: Optional[float], candidate: float, alpha: float) ->
 
 def _apply_gain_candidate(state, params, candidate):
     # reject unrealistic spikes
-    if candidate <= 0 or candidate < 0.1 * (state.gain_est or params.mpc_thermal_gain):
+    if candidate <= 0 or candidate < 0.1 * (state.gain_est or params.mpc_thermal_gain_Kps):
         # gentle shrink instead of immediate jump
         _penalize_gain_estimate(state, params, penalty_scale=0.5)
         return
     # standard blend
     alpha = min(max(params.mpc_adapt_alpha, 0.0), 1.0)
     blended = _blend_estimate(state.gain_est, candidate, alpha)
-    state.gain_est = max(params.mpc_gain_min, min(params.mpc_gain_max, blended))
+    state.gain_est = max(params.mpc_gain_min_Kps, min(params.mpc_gain_max_Kps, blended))
 
 
 def _penalize_gain_estimate(
     state: _MpcState, params: MpcParams, *, penalty_scale: float = 1.0
 ) -> None:
     if state.gain_est is None:
-        state.gain_est = params.mpc_thermal_gain
+        state.gain_est = params.mpc_thermal_gain_Kps
     alpha = min(max(params.mpc_adapt_alpha, 0.0), 1.0)
     alpha = min(1.0, alpha * max(penalty_scale, 0.0))
-    target = max(params.mpc_gain_min, min(params.mpc_gain_max, params.mpc_gain_min))
+    target = max(
+        params.mpc_gain_min_Kps, min(params.mpc_gain_max_Kps, params.mpc_gain_min_Kps)
+    )
     state.gain_est = (1.0 - alpha) * state.gain_est + alpha * target
-    state.gain_est = max(params.mpc_gain_min, min(params.mpc_gain_max, state.gain_est))
+    state.gain_est = max(
+        params.mpc_gain_min_Kps, min(params.mpc_gain_max_Kps, state.gain_est)
+    )
 
 
 def _apply_loss_candidate(
-    state: _MpcState, params: MpcParams, candidate: float
+    state: _MpcState, params: MpcParams, candidate_tau_s: float
 ) -> None:
+    # Tau-Schätzung (in Sekunden) blenden und clampen
     alpha = min(max(params.mpc_adapt_alpha, 0.0), 1.0)
-    blended = _blend_estimate(state.loss_est, candidate, alpha)
-    state.loss_est = max(params.mpc_loss_min, min(params.mpc_loss_max, blended))
+    blended = _blend_estimate(state.loss_est, candidate_tau_s, alpha)
+    blended = max(params.mpc_tau_min_s, min(params.mpc_tau_max_s, blended))
+    state.loss_est = blended
 
 
 def _penalize_loss_estimate(state: _MpcState, params: MpcParams) -> None:
+    # Keine Abkühlung beobachtet -> tau größer (langsamer Drift)
     if state.loss_est is None:
-        state.loss_est = params.mpc_loss_coeff
-    shrink = max(0.0, 1.0 - min(max(params.mpc_adapt_alpha, 0.0), 1.0))
-    state.loss_est *= shrink
-    state.loss_est = max(params.mpc_loss_min, min(params.mpc_loss_max, state.loss_est))
+        state.loss_est = params.mpc_tau_s
+    growth = 1.0 + min(max(params.mpc_adapt_alpha, 0.0), 1.0)
+    state.loss_est *= growth
+    state.loss_est = max(params.mpc_tau_min_s, min(
+        params.mpc_tau_max_s, state.loss_est))
 
 
 def _start_heating_phase(
@@ -419,7 +459,7 @@ def _update_gain_with_rls(
     lam = min(max(params.mpc_gain_rls_lambda, 0.1), 1.0)
     theta = state.gain_rls_theta
     if theta is None:
-        theta = params.mpc_thermal_gain
+        theta = params.mpc_thermal_gain_Kps
     P = state.gain_rls_cov
     if P is None or P <= 0.0:
         P = max(params.mpc_gain_rls_cov0, 1e-6)
@@ -430,7 +470,7 @@ def _update_gain_with_rls(
         return False, None
     K = P_phi / denom
     theta = theta + K * (y - u * theta)
-    theta = max(params.mpc_gain_min, min(params.mpc_gain_max, theta))
+    theta = max(params.mpc_gain_min_Kps, min(params.mpc_gain_max_Kps, theta))
     P = (P - K * u * P) / lam
     P = max(1e-6, min(1e6, P))
     state.gain_rls_theta = theta
@@ -526,12 +566,15 @@ def _finalize_heating_phase(
         _log_phase_event(name, entity, "heating", "skip", reason="invalid_duration")
         return result
     if temp_gain > 0.0:
-        gain_candidate = (temp_gain / duration_min) / (percent_used / 100.0)
+        duration_s = max(duration, 1e-6)
+        u = max(1e-3, percent_used / 100.0)
+        # Gain in K/s bei u=1
+        gain_candidate = (temp_gain / duration_s) / u
         applied_rls, rls_gain = _update_gain_with_rls(
             state,
             params,
             percent_used=percent_used,
-            duration_min=duration_min,
+            duration_min=duration_s / 60.0,
             temp_gain=temp_gain,
         )
         if applied_rls and rls_gain is not None:
@@ -615,18 +658,23 @@ def _finalize_idle_phase(
         _log_phase_event(name, entity, "idle", "skip", reason="invalid_duration")
         return result
     if temp_drop > 0.0:
-        error_ref = None
+        # Schätze tau aus Fehlerentwicklung e(t) = e0 * exp(-t/tau)
         if (
             state.idle_phase_target is not None
             and state.idle_phase_start_temp is not None
         ):
-            error_ref = float(state.idle_phase_target) - float(
-                state.idle_phase_start_temp
-            )
-        denom = max(0.2, abs(error_ref) if error_ref is not None else temp_drop)
-        loss_candidate = (temp_drop / duration_min) / denom
-        _apply_loss_candidate(state, params, loss_candidate)
-        result["loss_candidate"] = loss_candidate
+            e0 = float(state.idle_phase_target) - float(state.idle_phase_start_temp)
+            e1 = float(state.idle_phase_target) - float(temp_now)
+            tau_candidate = None
+            if e0 != 0.0 and e1 != 0.0 and (e0 * e1) > 0.0:
+                try:
+                    tau_candidate = duration / max(1e-6, -math.log(e1 / e0))
+                except (ValueError, ZeroDivisionError):
+                    tau_candidate = None
+            if tau_candidate is not None and math.isfinite(tau_candidate) and tau_candidate > 0.0:
+                _apply_loss_candidate(state, params, tau_candidate)
+                result["tau_candidate_s"] = tau_candidate
+        result["loss_phase_skipped"] = False
         result["loss_phase_skipped"] = False
         _log_phase_event(
             name,
@@ -635,11 +683,11 @@ def _finalize_idle_phase(
             "finalize",
             duration_s=duration,
             temp_delta=-temp_drop,
-            candidate=loss_candidate,
+            tau=result.get("tau_candidate_s"),
         )
     else:
         _penalize_loss_estimate(state, params)
-        result["loss_candidate"] = None
+        result["tau_candidate_s"] = None
         result["loss_phase_skipped"] = False
         _log_phase_event(
             name,
@@ -648,7 +696,7 @@ def _finalize_idle_phase(
             "finalize",
             duration_s=duration,
             temp_delta=-temp_drop,
-            candidate=None,
+            tau=None,
         )
     _reset_idle_phase(state)
     return result
@@ -838,14 +886,14 @@ def compute_mpc(inp: MpcInput, params: MpcParams) -> Optional[MpcOutput]:
 
     summary_delta = delta_t if delta_t is not None else initial_delta_t
     min_eff = state.min_effective_percent
-    summary_gain = extra_debug.get("mpc_gain")
-    summary_loss = extra_debug.get("mpc_loss")
+    summary_gain = extra_debug.get("mpc_gain_Kps")
+    summary_loss = extra_debug.get("mpc_tau_s")
     summary_horizon = extra_debug.get("mpc_horizon")
     summary_eval = extra_debug.get("mpc_eval_count")
     summary_cost = extra_debug.get("mpc_cost")
 
     _LOGGER.debug(
-        "better_thermostat %s: mpc calibration for %s: e0=%sK gain=%s loss=%s lag_tau=%s du_max=%s horizon=%s | raw=%s%% out=%s%% min_eff=%s%% last=%s%% dead_hits=%s eval=%s cost=%s flow_cap=%sK",
+        "better_thermostat %s: mpc calibration for %s: e0=%sK gain_Kps=%s tau_s=%s horizon=%s | raw=%s%% out=%s%% min_eff=%s%% last=%s%% dead_hits=%s eval=%s cost=%s flow_cap=%sK",
         name,
         entity,
         _round_for_debug(summary_delta, 3),
@@ -873,30 +921,38 @@ def compute_mpc(inp: MpcInput, params: MpcParams) -> Optional[MpcOutput]:
 def _resolve_gain_loss(
     state: _MpcState, params: MpcParams
 ) -> Tuple[float, float, float, float]:
-    raw_gain = state.gain_est if state.gain_est is not None else params.mpc_thermal_gain
-    raw_loss = state.loss_est if state.loss_est is not None else params.mpc_loss_coeff
+    """Liefert (gain_Kps, tau_s, gain_step_K, loss_step_1K_K).
 
-    raw_gain = max(params.mpc_gain_min, min(params.mpc_gain_max, raw_gain))
-    raw_loss = max(params.mpc_loss_min, min(params.mpc_loss_max, raw_loss))
+    gain_step_K = gain_Kps * dt
+    loss_step_1K_K = (1 K / tau_s) * dt = dt / tau_s (für e=1K)
+    """
+    gain_Kps = (
+        state.gain_est
+        if state.gain_est is not None
+        else params.mpc_thermal_gain_Kps
+    )
+    tau_s = state.loss_est if state.loss_est is not None else params.mpc_tau_s
 
-    step_minutes = MPC_STEP_SECONDS / 60.0
-    gain_step = max(0.0, float(raw_gain) * step_minutes)
-    loss_step = max(0.0, float(raw_loss) * step_minutes)
+    gain_Kps = max(params.mpc_gain_min_Kps, min(params.mpc_gain_max_Kps, gain_Kps))
+    tau_s = max(params.mpc_tau_min_s, min(params.mpc_tau_max_s, tau_s))
 
-    if loss_step > 0.9:
-        loss_step = 0.9
+    dt = MPC_STEP_SECONDS
+    gain_step_K = max(0.0, float(gain_Kps) * dt)
+    loss_step_1K_K = max(0.0, dt / float(tau_s))
 
-    return float(raw_gain), float(raw_loss), gain_step, loss_step
+    return float(gain_Kps), float(tau_s), gain_step_K, loss_step_1K_K
 
 
-def _compute_hold_percent(state: _MpcState, params: MpcParams) -> Optional[float]:
-    _, _, gain_step, loss_step = _resolve_gain_loss(state, params)
-    if gain_step <= 0.0 or loss_step <= 0.0:
-        return None
-    hold_percent = (loss_step / gain_step) * 100.0
-    if hold_percent <= 0.0:
-        return None
-    return min(100.0, hold_percent)
+def _compute_hold_percent(_state: _MpcState, _params: MpcParams, delta_t: float) -> Optional[float]:
+    """Hold-Berechnung auf Basis des einheitlichen Modells.
+
+    Für dieses vereinfachte Fehler-Modell ist nahe Ziel (|e| klein) kein zusätzlicher
+    Offset nötig, daher 0. Bei delta_t <= 0 wird nicht geheizt.
+    """
+    if delta_t <= 0.0:
+        return 0.0
+    # Haltewert im vereinfachten Fehler-Modell nicht erforderlich
+    return 0.0
 
 
 def _compute_predictive_percent(
@@ -904,87 +960,78 @@ def _compute_predictive_percent(
 ) -> Tuple[float, Dict[str, Any]]:
     """Core MPC minimisation routine."""
 
-    # delta_t is target - current (passed in by caller)
-    error_now = delta_t
+    # delta_t ist target - current (Fehler in K)
+    error_now = float(delta_t)
     assert inp.target_temp_C is not None
     assert inp.current_temp_C is not None
 
-    # step scaling: interpret params as per-minute or per-step? use per-minute * step_minutes
-    step_seconds = MPC_STEP_SECONDS
-    step_minutes = step_seconds / 60.0
-    raw_gain, raw_loss, gain_step, loss_step = _resolve_gain_loss(state, params)
+    # Schrittzeit
+    dt = MPC_STEP_SECONDS
+    step_minutes = dt / 60.0
 
-    lag_tau = max(params.mpc_lag_tau_s, 0.0)
-    if lag_tau > 0.0:
-        lag_alpha = 1.0 - math.exp(-step_seconds / lag_tau)
-        lag_alpha = max(0.0, min(1.0, lag_alpha))
-    else:
-        lag_alpha = 0.0
+    gain_Kps, tau_s, gain_step_K, loss_step_1K_K = _resolve_gain_loss(state, params)
 
-    setpoint = float(inp.target_temp_C)
-    current_temp = float(inp.current_temp_C)
-    # loss_step already encodes the passive cooling per MPC step; clamp for stability
-    loss_alpha = max(0.0, min(1.0, loss_step))
-
-    # prepare MPC search
+    # MPC-Parameter
     horizon = MPC_HORIZON_STEPS
     control_pen = max(0.0, float(params.mpc_control_penalty))
     change_pen = max(0.0, float(params.mpc_change_penalty))
     last_percent = state.last_percent if state.last_percent is not None else None
-    du_max = max(params.du_max_pct, 0.0)
 
     best_percent = 0.0
     best_cost = None
     eval_count = 0
 
-    # iterate candidates (coarse grid ok). keep candidate in 0..100
-    for candidate in range(0, 101, 2):
-        if last_percent is not None and du_max > 0.0:
-            if abs(candidate - last_percent) > du_max:
-                continue
+    # Coarse Suche (10%-Raster)
+    for candidate in range(0, 101, 10):
         u = candidate / 100.0
-        future_error = error_now if error_now is not None else 0.0
-        pred_temp = current_temp
+        e = error_now
         cost = 0.0
-        # simulate horizon with per-step dynamics:
         for _ in range(horizon):
-            if lag_tau > 0.0:
-                passive_term = 1.0 - (1.0 - lag_alpha) * (1.0 - loss_alpha)
-            else:
-                passive_term = loss_alpha
-            passive_term = max(0.0, min(1.0, passive_term))
-            pred_temp += -(pred_temp - setpoint) * passive_term
-            pred_temp += gain_step * u
-            future_error = setpoint - pred_temp
-            cost += future_error * future_error
+            e = e - (e / tau_s) * dt - gain_step_K * u
+            cost += e * e
             eval_count += 1
 
-        # scale penalties to [0..1] space
-        cost += control_pen * (u * u)  # use normalized u
+        cost += control_pen * (u * u)
         if last_percent is not None:
-            # normalize change to 0..1
             cost += change_pen * abs((candidate - last_percent) / 100.0)
 
         if best_cost is None or cost < best_cost:
             best_cost = cost
             best_percent = float(candidate)
 
-    # save last measurements
+    # Fine Suche (±10% um coarse-Best, 2%-Raster)
+    lo = int(max(0, best_percent - 10))
+    hi = int(min(100, best_percent + 10))
+    for candidate in range(lo, hi + 1, 2):
+        u = candidate / 100.0
+        e = error_now
+        cost = 0.0
+        for _ in range(horizon):
+            e = e - (e / tau_s) * dt - gain_step_K * u
+            cost += e * e
+            eval_count += 1
+
+        cost += control_pen * (u * u)
+        if last_percent is not None:
+            cost += change_pen * abs((candidate - last_percent) / 100.0)
+
+        if best_cost is None or cost < best_cost:
+            best_cost = cost
+            best_percent = float(candidate)
+
+    # Messungen sichern
     state.last_temp = inp.current_temp_C
     state.last_time = now
 
     mpc_debug = {
-        "mpc_gain": _round_for_debug(raw_gain, 4),
-        "mpc_loss": _round_for_debug(raw_loss, 4),
+        "mpc_gain_Kps": _round_for_debug(gain_Kps, 6),
+        "mpc_tau_s": _round_for_debug(tau_s, 1),
         "mpc_horizon": horizon,
         "mpc_eval_count": eval_count,
         "mpc_step_minutes": _round_for_debug(step_minutes, 3),
-        "mpc_gain_step": _round_for_debug(gain_step, 6),
-        "mpc_loss_step": _round_for_debug(loss_step, 6),
+        "mpc_gain_step_K": _round_for_debug(gain_step_K, 6),
+        "mpc_loss_step_1K_K": _round_for_debug(loss_step_1K_K, 6),
     }
-
-    if lag_tau > 0.0:
-        mpc_debug["mpc_lag_alpha"] = _round_for_debug(lag_alpha, 4)
 
     if best_cost is not None:
         mpc_debug["mpc_cost"] = _round_for_debug(best_cost, 6)
@@ -1227,30 +1274,19 @@ def _post_process_percent(
     hold_percent: Optional[float] = None
     hold_applied = False
     hold_tol = max(params.hold_tolerance_K, 0.0)
-    if (
-        hold_tol > 0.0
-        and delta_t is not None
-        and delta_t <= 0.0
-        and abs(delta_t) <= hold_tol
-    ):
-        hold_percent = _compute_hold_percent(state, params)
-        if hold_percent is not None and hold_percent > 0.0:
-            last_heat = state.heat_phase_percent
-            if last_heat is None and state.last_percent is not None:
-                last_heat = max(0.0, state.last_percent)
-            if last_heat is not None and last_heat > 0.0:
-                hold_percent = min(hold_percent, last_heat)
-            if hold_percent > 0.0 and smooth < hold_percent:
-                _LOGGER.debug(
-                    "better_thermostat %s: MPC hold compensation (%s) delta_T=%s hold=%s raw=%s",
-                    name,
-                    entity,
-                    _round_for_debug(delta_t, 3),
-                    _round_for_debug(hold_percent, 2),
-                    _round_for_debug(smooth, 2),
-                )
-                smooth = hold_percent
-                hold_applied = True
+    if hold_tol > 0.0 and delta_t is not None and abs(delta_t) <= hold_tol:
+        hold_percent = _compute_hold_percent(state, params, float(delta_t))
+        if hold_percent is not None and hold_percent > 0.0 and smooth < hold_percent:
+            _LOGGER.debug(
+                "better_thermostat %s: MPC hold compensation (%s) delta_T=%s hold=%s raw=%s",
+                name,
+                entity,
+                _round_for_debug(delta_t, 3),
+                _round_for_debug(hold_percent, 2),
+                _round_for_debug(smooth, 2),
+            )
+            smooth = hold_percent
+            hold_applied = True
 
     min_clamp_allowed = not hold_applied
     min_clamp_used = False
