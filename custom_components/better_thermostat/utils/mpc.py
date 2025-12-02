@@ -1018,17 +1018,23 @@ def _post_process_percent(
         and abs(delta_t) <= hold_tol
     ):
         hold_percent = _compute_hold_percent(state, params)
-        if hold_percent is not None and hold_percent > 0.0 and smooth < hold_percent:
-            _LOGGER.debug(
-                "better_thermostat %s: MPC hold compensation (%s) delta_T=%s hold=%s raw=%s",
-                name,
-                entity,
-                _round_for_debug(delta_t, 3),
-                _round_for_debug(hold_percent, 2),
-                _round_for_debug(smooth, 2),
-            )
-            smooth = hold_percent
-            hold_applied = True
+        if hold_percent is not None and hold_percent > 0.0:
+            last_heat = state.heat_phase_percent
+            if last_heat is None and state.last_percent is not None:
+                last_heat = max(0.0, state.last_percent)
+            if last_heat is not None and last_heat > 0.0:
+                hold_percent = min(hold_percent, last_heat)
+            if hold_percent > 0.0 and smooth < hold_percent:
+                _LOGGER.debug(
+                    "better_thermostat %s: MPC hold compensation (%s) delta_T=%s hold=%s raw=%s",
+                    name,
+                    entity,
+                    _round_for_debug(delta_t, 3),
+                    _round_for_debug(hold_percent, 2),
+                    _round_for_debug(smooth, 2),
+                )
+                smooth = hold_percent
+                hold_applied = True
 
     min_clamp_allowed = not hold_applied
     min_clamp_used = False
