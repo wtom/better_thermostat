@@ -371,7 +371,9 @@ def _blend_estimate(current: Optional[float], candidate: float, alpha: float) ->
 
 def _apply_gain_candidate(state, params, candidate):
     # reject unrealistic spikes
-    if candidate <= 0 or candidate < 0.1 * (state.gain_est or params.mpc_thermal_gain_Kps):
+    if candidate <= 0 or candidate < 0.1 * (
+        state.gain_est or params.mpc_thermal_gain_Kps
+    ):
         # gentle shrink instead of immediate jump
         _penalize_gain_estimate(state, params, penalty_scale=0.5)
         return
@@ -413,8 +415,9 @@ def _penalize_loss_estimate(state: _MpcState, params: MpcParams) -> None:
         state.loss_est = params.mpc_tau_s
     growth = 1.0 + min(max(params.mpc_adapt_alpha, 0.0), 1.0)
     state.loss_est *= growth
-    state.loss_est = max(params.mpc_tau_min_s, min(
-        params.mpc_tau_max_s, state.loss_est))
+    state.loss_est = max(
+        params.mpc_tau_min_s, min(params.mpc_tau_max_s, state.loss_est)
+    )
 
 
 def _start_heating_phase(
@@ -671,7 +674,11 @@ def _finalize_idle_phase(
                     tau_candidate = duration / max(1e-6, -math.log(e1 / e0))
                 except (ValueError, ZeroDivisionError):
                     tau_candidate = None
-            if tau_candidate is not None and math.isfinite(tau_candidate) and tau_candidate > 0.0:
+            if (
+                tau_candidate is not None
+                and math.isfinite(tau_candidate)
+                and tau_candidate > 0.0
+            ):
                 _apply_loss_candidate(state, params, tau_candidate)
                 result["tau_candidate_s"] = tau_candidate
         result["loss_phase_skipped"] = False
@@ -927,9 +934,7 @@ def _resolve_gain_loss(
     loss_step_1K_K = (1 K / tau_s) * dt = dt / tau_s (für e=1K)
     """
     gain_Kps = (
-        state.gain_est
-        if state.gain_est is not None
-        else params.mpc_thermal_gain_Kps
+        state.gain_est if state.gain_est is not None else params.mpc_thermal_gain_Kps
     )
     tau_s = state.loss_est if state.loss_est is not None else params.mpc_tau_s
 
@@ -943,7 +948,9 @@ def _resolve_gain_loss(
     return float(gain_Kps), float(tau_s), gain_step_K, loss_step_1K_K
 
 
-def _compute_hold_percent(_state: _MpcState, _params: MpcParams, delta_t: float) -> Optional[float]:
+def _compute_hold_percent(
+    _state: _MpcState, _params: MpcParams, delta_t: float
+) -> Optional[float]:
     """Hold-Berechnung auf Basis des einheitlichen Modells.
 
     Für dieses vereinfachte Fehler-Modell ist nahe Ziel (|e| klein) kein zusätzlicher
