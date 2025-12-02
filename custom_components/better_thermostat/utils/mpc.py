@@ -163,9 +163,30 @@ def list_state_keys(prefix: Optional[str] = None) -> List[str]:
     return [k for k in _MPC_STATE_REGISTRY.keys() if k.startswith(prefix)]
 
 
+def list_mpc_state_keys(prefix: Optional[str] = None) -> List[str]:
+    """Legacy alias: list state keys with optional prefix filter."""
+    return list_state_keys(prefix)
+
+
 def remove_state(key: str) -> bool:
     """Remove a state entry. Returns True if it existed."""
     return _MPC_STATE_REGISTRY.pop(key, None) is not None
+
+
+def remove_mpc_state(key: str) -> bool:
+    """Legacy alias: remove a state entry and return True if it existed."""
+    return remove_state(key)
+
+
+def clear_mpc_dead_zone_state(key: str) -> None:
+    """Legacy helper: clear deadzone-related state for a given key.
+
+    Resets `deadzone_min_pct` to a conservative default and zeroes the counter.
+    Does not remove the state entry.
+    """
+    st = get_state(key)
+    st.deadzone_min_pct = 8.0
+    st.deadzone_counter = 0
 
 
 def export_state_map(prefix: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
@@ -186,6 +207,11 @@ def export_state_map(prefix: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
         }
         result[key] = payload
     return result
+
+
+# Legacy alias names for compatibility with older imports
+def export_mpc_state_map(prefix: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    return export_state_map(prefix)
 
 
 def import_state_map(state_map: Dict[str, Dict[str, Any]]) -> None:
@@ -209,6 +235,58 @@ def import_state_map(state_map: Dict[str, Dict[str, Any]]) -> None:
         )
         st.last_temperature = _coerce_float(payload.get("last_temperature"))
         st.last_u_pct = _coerce_float(payload.get("last_u_pct"))
+
+
+def import_mpc_state_map(state_map: Dict[str, Dict[str, Any]]) -> None:
+    import_state_map(state_map)
+
+
+def apply_mpc_state_overrides(state: MpcState, overrides: Dict[str, Any]) -> MpcState:
+    """Apply overrides to a given `MpcState` instance (legacy helper).
+
+    Supported keys: `gain_est_C_per_min`, `loss_est_C_per_min`, `deadzone_min_pct`,
+    `deadzone_counter`, `last_decision_ts`, `last_temperature_ts`, `last_temperature`,
+    `last_u_pct`.
+    """
+    if overrides is None:
+        return state
+    if "gain_est_C_per_min" in overrides:
+        state.gain_est_C_per_min = _coerce_float(overrides.get("gain_est_C_per_min"))
+    if "loss_est_C_per_min" in overrides:
+        state.loss_est_C_per_min = _coerce_float(overrides.get("loss_est_C_per_min"))
+    if "deadzone_min_pct" in overrides:
+        val = overrides.get("deadzone_min_pct")
+        try:
+            if val is not None:
+                state.deadzone_min_pct = float(val)
+        except (TypeError, ValueError):
+            pass
+    if "deadzone_counter" in overrides:
+        val = overrides.get("deadzone_counter")
+        try:
+            if val is not None:
+                state.deadzone_counter = int(val)
+        except (TypeError, ValueError):
+            pass
+    if "last_decision_ts" in overrides:
+        val = overrides.get("last_decision_ts")
+        try:
+            if val is not None:
+                state.last_decision_ts = float(val)
+        except (TypeError, ValueError):
+            pass
+    if "last_temperature_ts" in overrides:
+        val = overrides.get("last_temperature_ts")
+        try:
+            if val is not None:
+                state.last_temperature_ts = float(val)
+        except (TypeError, ValueError):
+            pass
+    if "last_temperature" in overrides:
+        state.last_temperature = _coerce_float(overrides.get("last_temperature"))
+    if "last_u_pct" in overrides:
+        state.last_u_pct = _coerce_float(overrides.get("last_u_pct"))
+    return state
 
 
 def _coerce_float(val: Any) -> Optional[float]:
@@ -264,6 +342,30 @@ def u_to_pct(u: float) -> float:
 
 
 # ---------- Core physical step prediction ----------
+
+
+def build_mpc_key(inp_or_entity: Any, bt_name: Optional[str] = None) -> str:
+    """Build a stable MPC state key.
+
+    Backward-compatible helper to satisfy legacy imports.
+    Accepts either an `MpcInput` instance or a plain `entity_id` string.
+    If `bt_name` is provided (legacy), it is appended for disambiguation.
+    """
+    base: Optional[str] = None
+    if isinstance(inp_or_entity, MpcInput):
+        # Prefer explicit key, else entity_id, else bt_name
+        base = (
+            inp_or_entity.key
+            or inp_or_entity.entity_id
+            or inp_or_entity.bt_name
+            or "unknown"
+        )
+    else:
+        base = str(inp_or_entity) if inp_or_entity is not None else "unknown"
+        if bt_name:
+            base = f"{base}:{bt_name}"
+
+    return f"mpc:{base}"
 
 
 def predict_step(
@@ -727,4 +829,15 @@ def compute_mpc_output(
     inp: MpcInput, params: MpcParams, state: MpcState, now_s: float
 ) -> Tuple[int, Dict[str, Any]]:
     """Convenience wrapper returning (valve_percent, debug_dict)."""
+    return compute_mpc_percent(inp, params, state, now_s)
+
+
+# Legacy alias for backward compatibility
+def compute_mpc(
+    inp: MpcInput, params: MpcParams, state: Optional[MpcState], now_s: float
+) -> Tuple[int, Dict[str, Any]]:
+    """Legacy name mapping to `compute_mpc_percent`.
+
+    Returns (valve_percent, debug_dict).
+    """
     return compute_mpc_percent(inp, params, state, now_s)
