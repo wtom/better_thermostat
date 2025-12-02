@@ -42,6 +42,12 @@ class MpcParams:
     deadzone_raise_pct: float = 2.0
     deadzone_decay_pct: float = 1.0
     deadzone_room_delta_guard_K: float = 1.5
+    deadzone_room_temp_delta_guard_K: float = 0.2
+    deadzone_room_slope_guard_K_per_min: float = 0.01
+    deadzone_phase_min_s: float = 120.0
+    deadzone_score_increment: float = 1.0
+    deadzone_score_decay: float = 0.5
+    deadzone_score_cap: float = 10.0
 
 
 @dataclass
@@ -79,6 +85,7 @@ class _MpcState:
     last_trv_temp: Optional[float] = None
     last_trv_temp_ts: float = 0.0
     dead_zone_hits: int = 0
+    dead_zone_score: float = 0.0
     min_effective_percent: Optional[float] = None
     heat_phase_start_temp: Optional[float] = None
     heat_phase_start_ts: float = 0.0
@@ -86,6 +93,9 @@ class _MpcState:
     idle_phase_start_temp: Optional[float] = None
     idle_phase_start_ts: float = 0.0
     idle_phase_target: Optional[float] = None
+    last_dead_zone_room_temp: Optional[float] = None
+    last_dead_zone_room_ts: float = 0.0
+    last_dead_zone_room_delta: Optional[float] = None
 
 
 _MPC_STATES: Dict[str, _MpcState] = {}
@@ -100,6 +110,7 @@ _STATE_EXPORT_FIELDS = (
     "last_trv_temp",
     "min_effective_percent",
     "dead_zone_hits",
+    "dead_zone_score",
 )
 
 
@@ -717,26 +728,35 @@ def _apply_dead_zone_detection(
     name: str,
     entity: str,
     min_clamp_active: bool,
-) -> tuple[int, Optional[float], Optional[float]]:
+) -> tuple[int, Optional[float], Optional[float], Dict[str, Any]]:
     """Update dead-zone tracking and min-effective clamps."""
 
     temp_delta: Optional[float] = None
     time_delta: Optional[float] = None
+    dead_debug: Dict[str, Any] = {}
 
     if inp.trv_temp_C is None:
         state.last_trv_temp = None
         state.last_trv_temp_ts = 0.0
         state.dead_zone_hits = 0
-        return percent_out, temp_delta, time_delta
+        state.dead_zone_score = 0.0
+        return percent_out, temp_delta, time_delta, dead_debug
 
     if state.last_trv_temp is None or state.last_trv_temp_ts == 0.0:
         state.last_trv_temp = inp.trv_temp_C
         state.last_trv_temp_ts = now
-        return percent_out, temp_delta, time_delta
+        if inp.current_temp_C is not None:
+            state.last_dead_zone_room_temp = inp.current_temp_C
+            state.last_dead_zone_room_ts = now
+        return percent_out, temp_delta, time_delta, dead_debug
 
     temp_delta = inp.trv_temp_C - state.last_trv_temp
     time_delta = now - state.last_trv_temp_ts
     eval_after = max(params.deadzone_time_s, 1.0)
+
+    if inp.current_temp_C is not None and state.last_dead_zone_room_temp is None:
+        state.last_dead_zone_room_temp = inp.current_temp_C
+        state.last_dead_zone_room_ts = now
 
     if time_delta >= eval_after:
         room_delta = None
@@ -745,6 +765,17 @@ def _apply_dead_zone_detection(
                 room_delta = float(inp.trv_temp_C) - float(inp.current_temp_C)
             except (TypeError, ValueError):
                 room_delta = None
+
+        room_temp_delta = None
+        room_temp_dt = 0.0
+        if (
+            inp.current_temp_C is not None
+            and state.last_dead_zone_room_temp is not None
+            and state.last_dead_zone_room_ts > 0.0
+        ):
+            room_temp_delta = inp.current_temp_C - state.last_dead_zone_room_temp
+            room_temp_dt = now - state.last_dead_zone_room_ts
+        state.last_dead_zone_room_delta = room_temp_delta
 
         tol = max(inp.tolerance_K, 0.0)
         needs_heat = delta_t is not None and delta_t > tol
@@ -755,25 +786,57 @@ def _apply_dead_zone_detection(
         room_hot_guard = max(params.deadzone_room_delta_guard_K, 0.0)
         trv_not_hot = room_delta is None or room_delta <= room_hot_guard
 
-        if small_command and needs_heat and weak_response and trv_not_hot:
-            state.dead_zone_hits += 1
+        room_flat_guard = max(params.deadzone_room_temp_delta_guard_K, 0.0)
+        room_flat = room_temp_delta is None or abs(room_temp_delta) <= room_flat_guard
+
+        slope_value = state.ema_slope
+        if slope_value is None:
+            slope_value = inp.temp_slope_K_per_min
+        slope_guard = params.deadzone_room_slope_guard_K_per_min
+        slope_ok = slope_value is None or slope_value <= slope_guard
+
+        phase_ready = False
+        phase_age = 0.0
+        if state.heat_phase_start_ts > 0.0 and state.heat_phase_start_temp is not None:
+            phase_age = now - state.heat_phase_start_ts
+            phase_ready = phase_age >= max(params.deadzone_phase_min_s, 0.0)
+
+        observation_ready = (
+            phase_ready
+            and small_command
+            and needs_heat
+            and weak_response
+            and trv_not_hot
+            and room_flat
+            and slope_ok
+        )
+
+        if observation_ready:
+            score_inc = max(params.deadzone_score_increment, 0.0)
+            state.dead_zone_score = min(
+                params.deadzone_score_cap, state.dead_zone_score + score_inc
+            )
+            state.dead_zone_hits = int(round(state.dead_zone_score))
             _LOGGER.debug(
-                "better_thermostat %s: MPC dead-zone observation (%s) hits=%s/%s temp_delta=%s room_delta=%s command=%s%%",
+                "better_thermostat %s: MPC dead-zone observation (%s) hits=%s/%s temp_delta=%s room_delta=%s room_temp_delta=%s slope=%s command=%s%%",
                 name,
                 entity,
                 state.dead_zone_hits,
                 params.deadzone_hits_required,
                 _round_for_debug(temp_delta, 3),
                 _round_for_debug(room_delta, 3),
+                _round_for_debug(room_temp_delta, 3),
+                _round_for_debug(slope_value, 4),
                 percent_out,
             )
             if (
                 params.deadzone_hits_required > 0
-                and state.dead_zone_hits >= params.deadzone_hits_required
+                and state.dead_zone_score >= params.deadzone_hits_required
             ):
                 proposed = percent_out + params.deadzone_raise_pct
                 current_min = state.min_effective_percent or 0.0
                 state.min_effective_percent = min(100.0, max(current_min, proposed))
+                state.dead_zone_score = 0.0
                 state.dead_zone_hits = 0
                 _LOGGER.debug(
                     "better_thermostat %s: MPC dead-zone raise (%s) proposed=%s new_min=%s",
@@ -793,6 +856,11 @@ def _apply_dead_zone_detection(
                 heating_detected = True
                 decay_reason = "room_delta"
 
+            if not heating_detected:
+                decay = max(params.deadzone_score_decay, 0.0)
+                state.dead_zone_score = max(0.0, state.dead_zone_score - decay)
+                state.dead_zone_hits = int(round(state.dead_zone_score))
+
             if state.min_effective_percent is not None and heating_detected:
                 new_min = state.min_effective_percent - params.deadzone_decay_pct
                 state.min_effective_percent = new_min if new_min > 0.0 else None
@@ -805,6 +873,8 @@ def _apply_dead_zone_detection(
                     _round_for_debug(room_delta, 3),
                     _round_for_debug(state.min_effective_percent, 2),
                 )
+                state.dead_zone_score = 0.0
+                state.dead_zone_hits = 0
             state.dead_zone_hits = 0
             if prev_hits:
                 _LOGGER.debug(
@@ -817,8 +887,25 @@ def _apply_dead_zone_detection(
 
         state.last_trv_temp = inp.trv_temp_C
         state.last_trv_temp_ts = now
+        if inp.current_temp_C is not None:
+            state.last_dead_zone_room_temp = inp.current_temp_C
+            state.last_dead_zone_room_ts = now
 
-    return percent_out, temp_delta, time_delta
+        dead_debug.update(
+            {
+                "dead_zone_score": _round_for_debug(state.dead_zone_score, 2),
+                "dead_zone_phase_ready": phase_ready,
+                "dead_zone_phase_age_s": _round_for_debug(phase_age, 1),
+                "dead_zone_room_temp_delta": _round_for_debug(room_temp_delta, 3),
+                "dead_zone_room_temp_dt_s": _round_for_debug(room_temp_dt, 1),
+                "dead_zone_room_flat": room_flat,
+                "dead_zone_slope": _round_for_debug(slope_value, 4),
+                "dead_zone_slope_flat": slope_ok,
+                "dead_zone_trv_not_hot": trv_not_hot,
+            }
+        )
+
+    return percent_out, temp_delta, time_delta, dead_debug
 
 
 def _post_process_percent(
@@ -904,7 +991,7 @@ def _post_process_percent(
         )
 
     min_clamp_for_dead_zone = min_clamp_used
-    percent_out, temp_delta, time_delta = _apply_dead_zone_detection(
+    percent_out, temp_delta, time_delta, dead_debug = _apply_dead_zone_detection(
         inp=inp,
         params=params,
         state=state,
@@ -969,6 +1056,9 @@ def _post_process_percent(
         "heating_phase_active": state.heat_phase_start_temp is not None,
         "idle_phase_active": state.idle_phase_start_temp is not None,
     }
+
+    for key, value in dead_debug.items():
+        debug[key] = value
 
     for key, value in phase_debug.items():
         debug[key] = _round_for_debug(value, 4) if isinstance(value, float) else value
