@@ -44,7 +44,6 @@ Inputs (available today in BT):
 Outputs (consumed by controlling/adapters):
 - valve_percent (0–100) for devices with valve control
 - setpoint_eff_C = target_temp_C − flow_cap_K for setpoint-only devices
-- flow_cap_K (0..cap_max_K) for telemetry/tuning
 - sonoff_min_open_pct, sonoff_max_open_pct for Sonoff TRVZB
 - suggested_valve_percent: convenience attribute mirroring the recommended valve_percent for graphing/automations
 
@@ -62,7 +61,6 @@ State (lightweight, per room key):
   - positive slope → reduce opening (prevent overshoot)
   - negative slope (while ΔT>0) → ensure at least a minimum opening
 - Smooth via EMA, apply hysteresis and a minimum update interval to save battery and reduce traffic. The overshoot fast path above bypasses these guards. Clamping respects the learned max_cap.
-- flow_cap_K = cap_max_K * (1 - valve_percent/100)
 - For Sonoff: sonoff_max_open_pct = valve_percent; sonoff_min_open_pct ≈ 0–5% depending on overshoot.
 - Phase-aware learning of caps:
   - Update max_open only in heating phase (ΔT ≥ band_near).
@@ -166,12 +164,11 @@ All steps are per-room and require no global information.
     - sluggish_slope_threshold_K_min: Schwelle für „zu träge“ in K/min (Default: 0.005)
     - steady_state_band_K: Band für quasi-stationären Zustand in Kelvin (Default: 0.1)
     - tune_min_interval_s: Mindestabstand zwischen Tuning-Schritten (Default: 1800 s)
-- Future tuning parameters (cap_max, bands, hysteresis) can be exposed if needed.
+- Future tuning parameters (bands, hysteresis) can be exposed if needed.
 
 Suggested defaults (current):
 - band_near_K = 0.1
 - band_far_K = 0.3
-- cap_max_K = 0.8
 - slope_up_K_per_min = +0.02
 - slope_down_K_per_min = −0.01
 - slope_gain_per_K_per_min = −1000.0 (e.g., +0.02 K/min → −20 pp)

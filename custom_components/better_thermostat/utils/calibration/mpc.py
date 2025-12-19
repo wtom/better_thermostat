@@ -21,7 +21,6 @@ MPC_HORIZON_STEPS = 12
 class MpcParams:
     """Configuration for the predictive controller."""
 
-    cap_max_K: float = 0.8
     percent_hysteresis_pts: float = 0.5
     min_update_interval_s: float = 60.0
     mpc_thermal_gain: float = 0.06
@@ -81,8 +80,15 @@ class _MpcState:
     min_effective_percent: Optional[float] = None
     last_learn_time: Optional[float] = None
     last_learn_temp: Optional[float] = None
+    # Virtual temperature model anchored at the last *sensor change* or last *u change*.
+    # - virtual_base_temp: anchor temperature at virtual_base_ts
+    # - virtual_temp: current virtual temperature estimate (recomputed from base each call)
+    virtual_base_temp: Optional[float] = None
+    virtual_base_ts: float = 0.0
     virtual_temp: Optional[float] = None
-    virtual_temp_ts: float = 0.0
+    # Track last sensor update (only when temperature changes meaningfully)
+    last_sensor_temp: Optional[float] = None
+    last_sensor_ts: float = 0.0
     trv_profile: str = "unknown"
     profile_confidence: float = 0.0
     profile_samples: int = 0
@@ -102,8 +108,11 @@ _STATE_EXPORT_FIELDS = (
     "dead_zone_hits",
     "last_learn_time",
     "last_learn_temp",
+    "virtual_base_temp",
+    "virtual_base_ts",
     "virtual_temp",
-    "virtual_temp_ts",
+    "last_sensor_temp",
+    "last_sensor_ts",
 )
 
 
@@ -234,8 +243,11 @@ def compute_mpc(inp: MpcInput, params: MpcParams) -> Optional[MpcOutput]:
         delta_t = None
         state.last_learn_time = None
         state.last_learn_temp = None
+        state.virtual_base_temp = None
+        state.virtual_base_ts = 0.0
         state.virtual_temp = None
-        state.virtual_temp_ts = 0.0
+        state.last_sensor_temp = None
+        state.last_sensor_ts = 0.0
         state.last_percent = None
         _LOGGER.debug(
             "better_thermostat %s: MPC skip heating (%s) window_open=%s heating_allowed=%s",
@@ -256,42 +268,64 @@ def compute_mpc(inp: MpcInput, params: MpcParams) -> Optional[MpcOutput]:
             )
         else:
             # --------------------------------------------
-            # VIRTUAL TEMPERATURE FORWARD PREDICTION
+            # VIRTUAL TEMPERATURE (ANCHOR MODEL)
             # --------------------------------------------
-            if state.virtual_temp is not None and state.last_percent is not None:
-                time_since_virtual = now - state.virtual_temp_ts
+            # Anchor the model on the last meaningful sensor update.
+            # If the sensor is quantized and doesn't change for a while, we will
+            # forward-predict from the last anchor using dt since that anchor.
+            sensor_temp = float(inp.current_temp_C)
 
-                if time_since_virtual > 0.5:
-                    dt_min = time_since_virtual / 60.0
+            if state.last_sensor_temp is None:
+                state.last_sensor_temp = sensor_temp
+                state.last_sensor_ts = now
+                state.virtual_base_temp = sensor_temp
+                state.virtual_base_ts = now
+            else:
+                if sensor_temp != float(state.last_sensor_temp):
+                    state.last_sensor_temp = sensor_temp
+                    state.last_sensor_ts = now
+                    state.virtual_base_temp = sensor_temp
+                    state.virtual_base_ts = now
 
-                    u = max(0.0, min(100.0, state.last_percent)) / 100.0
-                    gain_est = (
-                        float(state.gain_est)
-                        if state.gain_est is not None
-                        else float(params.mpc_thermal_gain)
-                    )
-                    loss_est = (
-                        float(state.loss_est)
-                        if state.loss_est is not None
-                        else float(params.mpc_loss_coeff)
-                    )
+            gain_est = (
+                float(state.gain_est)
+                if state.gain_est is not None
+                else float(params.mpc_thermal_gain)
+            )
+            loss_est = (
+                float(state.loss_est)
+                if state.loss_est is not None
+                else float(params.mpc_loss_coeff)
+            )
+            gain = max(params.mpc_gain_min, min(params.mpc_gain_max, gain_est))
+            loss = max(params.mpc_loss_min, min(params.mpc_loss_max, loss_est))
 
-                    gain = max(params.mpc_gain_min, min(params.mpc_gain_max, gain_est))
-                    loss = max(params.mpc_loss_min, min(params.mpc_loss_max, loss_est))
+            base_temp = (
+                float(state.virtual_base_temp)
+                if state.virtual_base_temp is not None
+                else sensor_temp
+            )
+            base_age_s = max(0.0, now - float(state.virtual_base_ts or 0.0))
+            dt_min = base_age_s / 60.0
 
-                    predicted_dT = gain * u * dt_min - loss * dt_min
+            u = 0.0
+            if state.last_percent is not None:
+                u = max(0.0, min(100.0, float(state.last_percent))) / 100.0
 
-                    state.virtual_temp += predicted_dT
-                    state.virtual_temp_ts = now
+            predicted_dT = (gain * u - loss) * dt_min
 
-                    _LOGGER.debug(
-                        "better_thermostat %s: MPC virtual-temp forward %.4fK (u=%.1f, gain=%.4f, loss=%.4f)",
-                        inp.bt_name or "BT",
-                        predicted_dT,
-                        u * 100,
-                        gain,
-                        loss,
-                    )
+            state.virtual_temp = base_temp + predicted_dT
+            _LOGGER.debug(
+                "better_thermostat %s: MPC virtual-temp anchor base=%.3f age=%.1fs -> %.3f (dT=%.4fK, u=%.1f, gain=%.4f, loss=%.4f)",
+                inp.bt_name or "BT",
+                base_temp,
+                base_age_s,
+                float(state.virtual_temp),
+                predicted_dT,
+                u * 100,
+                gain,
+                loss,
+            )
 
             # --------------------------------------------
             # DELTA T USING VIRTUAL TEMPERATURE
@@ -427,12 +461,7 @@ def _compute_predictive_percent(
             observed_rate = (delta_T / dt_min) if dt_min > 0 else 0.0  # °C/min
 
             # Learn only when the sensor actually changed (quantised sensors).
-            temp_change_threshold_C = float(
-                getattr(params, "mpc_temp_change_threshold_C", 0.05)
-            )
-            if temp_change_threshold_C <= 0:
-                temp_change_threshold_C = 0.05
-            temp_changed = abs(delta_T) >= temp_change_threshold_C
+            temp_changed = delta_T != 0.0
 
             # sanity: avoid learning on extreme transients / sensor jumps
             # (typical indoor rate is far below 1°C/min)
@@ -563,9 +592,6 @@ def _compute_predictive_percent(
                 "id_dt_min": _round_for_debug(dt_min, 3),
                 "id_delta_T": _round_for_debug(delta_T, 3),
                 "id_temp_changed": temp_changed,
-                "id_temp_change_threshold_C": _round_for_debug(
-                    temp_change_threshold_C, 3
-                ),
                 "id_rate": _round_for_debug(observed_rate, 4),
                 "id_rate_ok": rate_ok,
                 "id_u_last": _round_for_debug(u_last, 3),
@@ -803,19 +829,6 @@ def _post_process_percent(
 
     name = inp.bt_name or "BT"
     entity = inp.entity_id or "unknown"
-
-    # --------------------------------------------
-    # VIRTUAL TEMPERATURE SYNCHRONISATION
-    # --------------------------------------------
-    if inp.current_temp_C is not None:
-        if state.virtual_temp is None:
-            state.virtual_temp = inp.current_temp_C
-        else:
-            alpha = 0.3  # Sensorvertrauen
-            state.virtual_temp = (
-                alpha * inp.current_temp_C + (1 - alpha) * state.virtual_temp
-            )
-        state.virtual_temp_ts = now
 
     # ============================================================
     # 1) INITIAL RAW VALUE
@@ -1069,6 +1082,15 @@ def _post_process_percent(
         "trv_profile_samples": state.profile_samples,
         "trv_temp_delta": _round_for_debug(temp_delta, 3),
         "trv_time_delta_s": _round_for_debug(time_delta, 1),
+        "virtual_temp": _round_for_debug(state.virtual_temp, 3),
+        "virtual_base_temp": _round_for_debug(state.virtual_base_temp, 3),
+        "virtual_base_age_s": _round_for_debug(
+            (now - state.virtual_base_ts) if state.virtual_base_ts else None, 1
+        ),
+        "last_sensor_temp": _round_for_debug(state.last_sensor_temp, 3),
+        "last_sensor_age_s": _round_for_debug(
+            (now - state.last_sensor_ts) if state.last_sensor_ts else None, 1
+        ),
     }
 
     # slope EMA unchanged
@@ -1117,5 +1139,13 @@ def _post_process_percent(
     if original_last_percent is None or abs(percent_out - original_last_percent) >= 0.5:
         state.last_percent = float(percent_out)
         state.last_update_ts = now
+        # Anchor the virtual temperature model when u changes.
+        # This ensures forward prediction integrates only since last u-change or sensor-change.
+        if state.virtual_temp is not None:
+            state.virtual_base_temp = float(state.virtual_temp)
+            state.virtual_base_ts = now
+        elif inp.current_temp_C is not None:
+            state.virtual_base_temp = float(inp.current_temp_C)
+            state.virtual_base_ts = now
 
     return percent_out, debug, delta_t
