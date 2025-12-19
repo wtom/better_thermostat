@@ -17,6 +17,11 @@ MPC_STEP_SECONDS = 300.0
 MPC_HORIZON_STEPS = 12
 
 
+# Virtual temperature is a helper to bridge quantized/stale sensors.
+# It must never drift far from the actual sensor value.
+VIRTUAL_TEMP_MAX_DEVIATION_K = 0.1
+
+
 @dataclass
 class MpcParams:
     """Configuration for the predictive controller."""
@@ -314,9 +319,18 @@ def compute_mpc(inp: MpcInput, params: MpcParams) -> Optional[MpcOutput]:
 
             predicted_dT = (gain * u - loss) * dt_min
 
-            state.virtual_temp = base_temp + predicted_dT
+            virtual_temp = base_temp + predicted_dT
+            cap_K = VIRTUAL_TEMP_MAX_DEVIATION_K
+            capped = False
+            if cap_K > 0:
+                diff = virtual_temp - sensor_temp
+                if abs(diff) > cap_K:
+                    virtual_temp = sensor_temp + (cap_K if diff > 0 else -cap_K)
+                    capped = True
+
+            state.virtual_temp = virtual_temp
             _LOGGER.debug(
-                "better_thermostat %s: MPC virtual-temp anchor base=%.3f age=%.1fs -> %.3f (dT=%.4fK, u=%.1f, gain=%.4f, loss=%.4f)",
+                "better_thermostat %s: MPC virtual-temp anchor base=%.3f age=%.1fs -> %.3f (dT=%.4fK, u=%.1f, gain=%.4f, loss=%.4f, cap=%.3f, capped=%s)",
                 inp.bt_name or "BT",
                 base_temp,
                 base_age_s,
@@ -325,6 +339,8 @@ def compute_mpc(inp: MpcInput, params: MpcParams) -> Optional[MpcOutput]:
                 u * 100,
                 gain,
                 loss,
+                cap_K,
+                capped,
             )
 
             # --------------------------------------------
@@ -535,10 +551,20 @@ def _compute_predictive_percent(
                 u0_frac = (loss_est / gain_est) if gain_est > 0 else 0.0
                 u0_frac = max(0.0, min(1.0, u0_frac))
                 u0_near = abs(u_last - u0_frac) <= u0_band
+                min_eff_frac = (
+                    (float(state.min_effective_percent) / 100.0)
+                    if state.min_effective_percent is not None
+                    else 0.0
+                )
+                forced_min_open = (
+                    state.min_effective_percent is not None
+                    and abs(u_last - min_eff_frac) <= 0.02
+                    and u_last > u0_frac
+                )
                 residual_ok = (
                     (not residual_rate_limited)
                     and (not residual_block_jump)
-                    and u0_near
+                    and (u0_near or forced_min_open)
                     and abs(observed_rate) <= ss_rate_thr
                 )
 
@@ -601,14 +627,25 @@ def _compute_predictive_percent(
                 "id_loss_method": loss_method,
                 "id_u0": _round_for_debug(u0_frac_dbg, 3),
                 "id_u0_band": _round_for_debug(0.10, 3),
+                "id_forced_min_open": forced_min_open,
                 "id_loss_ss_rate_thr": _round_for_debug(0.02, 4),
                 "id_residual_ok": residual_ok,
                 "id_residual_rate_limited": residual_rate_limited,
                 "id_residual_block_jump": residual_block_jump,
             }
 
-            state.last_learn_time = now
-            state.last_learn_temp = inp.current_temp_C
+            residual_min_interval_s = 600.0
+            residual_max_interval_s = 1800.0
+            advance_window = (
+                temp_changed
+                or updated_gain
+                or updated_loss
+                or dt_last >= residual_min_interval_s
+                or dt_last >= residual_max_interval_s
+            )
+            if advance_window:
+                state.last_learn_time = now
+                state.last_learn_temp = inp.current_temp_C
 
         except (TypeError, ValueError, ZeroDivisionError):
             pass
