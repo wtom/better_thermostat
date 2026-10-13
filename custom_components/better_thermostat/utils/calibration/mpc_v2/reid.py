@@ -69,8 +69,15 @@ class ReidBuffer:
         for optional in (sample.T_outdoor, sample.T_trv, sample.T_water):
             if optional is not None and not math.isfinite(optional):
                 return False
-        if self.samples and sample.t_s - self.samples[-1].t_s < self.min_spacing_s:
-            return False
+        if self.samples:
+            previous = self.samples[-1]
+            if sample.window_open and previous.window_open:
+                return False
+            if (
+                not sample.window_open
+                and sample.t_s - previous.t_s < self.min_spacing_s
+            ):
+                return False
         self.samples.append(sample)
         if len(self.samples) > self.maxlen:
             del self.samples[: len(self.samples) - self.maxlen]

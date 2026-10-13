@@ -602,6 +602,7 @@ def _record_mpc_v2_reid_sample(
     trv_temperature: float | None,
     outdoor_temperature: float | None,
     supply_temperature: float | None = None,
+    heating_flow_available: bool = True,
 ) -> None:
     """Append one observation to the re-identification buffer for a key.
 
@@ -629,11 +630,14 @@ def _record_mpc_v2_reid_sample(
     if room_temperature is None:
         return
     t_room = float(room_temperature)
-    if applied_valve_percent is None:
-        # A current MPC proposal is not evidence of a physical valve input:
-        # the write can still be deferred, clamped, or fail.
-        return
-    u_frac = applied_valve_percent / 100.0
+    if heating_flow_available:
+        if applied_valve_percent is None:
+            # A proposal is not evidence of a physical valve input: its
+            # write can still be deferred, clamped, or fail.
+            return
+        u_frac = applied_valve_percent / 100.0
+    else:
+        u_frac = 0.0
     if not math.isfinite(u_frac):
         return
     u_frac = max(0.0, min(1.0, u_frac))
@@ -648,7 +652,7 @@ def _record_mpc_v2_reid_sample(
             T_trv=trv_temperature
             if isinstance(trv_temperature, (int, float))
             else None,
-            window_open=self.contact_open,
+            window_open=self.contact_open or not heating_flow_available,
         )
     )
 
@@ -935,9 +939,9 @@ def _compute_mpc_v2_balance(
     if (
         preset == MpcV2PlantPreset.AUTO
         and not is_multi_trv
-        and heating_flow_available
         and (
-            self.mpc_v2_supply_sensor_entity_id is None
+            not heating_flow_available
+            or self.mpc_v2_supply_sensor_entity_id is None
             or supply_temperature is not None
         )
     ):
@@ -948,8 +952,10 @@ def _compute_mpc_v2_balance(
             trv_temperature=trv_state.current_temperature,
             outdoor_temperature=outdoor_temperature,
             supply_temperature=supply_temperature,
+            heating_flow_available=heating_flow_available,
         )
-        _maybe_start_mpc_v2_reid_fit(self, reid_key, v2_params)
+        if heating_flow_available:
+            _maybe_start_mpc_v2_reid_fit(self, reid_key, v2_params)
 
     if mpc_output is None:
         trv_state.calibration_balance = None

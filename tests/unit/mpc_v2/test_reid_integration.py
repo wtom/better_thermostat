@@ -189,8 +189,8 @@ def _make_bt(preset: StoredChoice = MpcV2PlantPreset.AUTO) -> Any:
 def test_measured_supply_is_blocked_during_dhw() -> None:
     """The storage pump masks boiler supply readings from the heating model."""
     bt = _make_bt()
-    bt.mpc_v2_supply_sensor_entity_id = "sensor.heizung_vorlauf"
-    bt.mpc_v2_dhw_sensor_entity_id = "sensor.heizung_pumpe_status_speicher"
+    bt.mpc_v2_supply_sensor_entity_id = "sensor.heating_supply"
+    bt.mpc_v2_dhw_sensor_entity_id = "sensor.dhw_pump"
     readings = {
         bt.mpc_v2_supply_sensor_entity_id: State(
             bt.mpc_v2_supply_sensor_entity_id, "35.0", {"unit_of_measurement": "°C"}
@@ -202,6 +202,9 @@ def test_measured_supply_is_blocked_during_dhw() -> None:
     out, _ = _compute_mpc_v2_balance(bt, "climate.x")
     assert out is None  # No earlier plan exists when startup begins during DHW.
     assert bt.state_mgr.state.mpc_v2_reid == {}
+    reid_key = _build_mpc_v2_reid_key(bt)
+    samples = bt.state_mgr.get_mpc_v2_reid_runtime(reid_key).buffer.samples
+    assert len(samples) == 1 and samples[0].window_open
 
     readings[bt.mpc_v2_dhw_sensor_entity_id] = State(
         bt.mpc_v2_dhw_sensor_entity_id, "0.0"
@@ -213,6 +216,8 @@ def test_measured_supply_is_blocked_during_dhw() -> None:
     controller = next(iter(bt.state_mgr._mpc_v2_live.values())).controller
     assert controller is not None
     assert controller.plant_fine.params.T_water == 35.0
+    samples = bt.state_mgr.get_mpc_v2_reid_runtime(reid_key).buffer.samples
+    assert samples[0].window_open
 
 
 def test_measured_supply_does_not_reuse_fixed_reference_fit() -> None:
@@ -220,11 +225,11 @@ def test_measured_supply_does_not_reuse_fixed_reference_fit() -> None:
     bt = _make_bt()
     old_key = _build_mpc_v2_reid_key(bt)
     bt.state_mgr.adopt_mpc_v2_reid(old_key, _REID)
-    bt.mpc_v2_supply_sensor_entity_id = "sensor.heizung_vorlauf"
+    bt.mpc_v2_supply_sensor_entity_id = "sensor.heating_supply"
     bt.hass = SimpleNamespace(
         states=SimpleNamespace(
             get=lambda _entity_id: State(
-                "sensor.heizung_vorlauf", "35", {"unit_of_measurement": "°C"}
+                "sensor.heating_supply", "35", {"unit_of_measurement": "°C"}
             )
         )
     )

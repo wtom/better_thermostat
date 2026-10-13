@@ -52,6 +52,17 @@ def test_buffer_dedupes_samples_closer_than_spacing() -> None:
     assert len(buf.samples) == 2
 
 
+def test_diversion_marker_cuts_a_segment_even_inside_spacing() -> None:
+    """A short DHW switch must not bridge two heating observations."""
+    buf = ReidBuffer(min_spacing_s=60.0)
+    assert buf.append(_sample(1000.0, 20.0, 0.8))
+    assert buf.append(_sample(1001.0, 20.0, 0.0, window=True))
+    assert not buf.append(_sample(1002.0, 20.0, 0.0, window=True))
+    assert not buf.append(_sample(1003.0, 20.0, 0.8))
+    assert buf.append(_sample(1062.0, 20.1, 0.8))
+    assert [sample.window_open for sample in buf.samples] == [False, True, False]
+
+
 def test_buffer_evicts_oldest_beyond_maxlen() -> None:
     """The buffer stays bounded and keeps the most recent samples."""
     buf = ReidBuffer(maxlen=5, min_spacing_s=1.0)
