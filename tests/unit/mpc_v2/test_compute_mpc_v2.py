@@ -92,6 +92,50 @@ def test_first_call_creates_controller_and_returns_percent() -> None:
     assert state.last_percent == float(out.valve_percent)
 
 
+def test_low_supply_does_not_heat_room_clearly_above_target() -> None:
+    """A realistic low supply must not turn overshoot into a heat request."""
+    params = MpcV2Params(plant=make_plant_prior(0.0125, 0.00139))
+    inp = replace(
+        _baseline_input(
+            target_temperature=20.8,
+            room_temperature=21.1,
+            trv_temperature=21.1,
+            outdoor_temperature=10.2,
+            applied_valve_percent=2.0,
+        ),
+        supply_temperature=33.9,
+    )
+
+    out, _ = compute_mpc_v2(inp, params, now=1000.0)
+
+    assert out is not None
+    assert out.valve_percent == 0
+
+
+def test_overshoot_closes_previous_plan_without_waiting_for_replan() -> None:
+    """The comfort cap applies even while MPC's old plan is still cached."""
+    params = MpcV2Params(plant=make_plant_prior(0.0125, 0.00139))
+    inp = replace(
+        _baseline_input(
+            target_temperature=20.8,
+            room_temperature=20.8,
+            trv_temperature=20.8,
+            outdoor_temperature=10.2,
+        ),
+        supply_temperature=33.9,
+    )
+    first, state = compute_mpc_v2(inp, params, now=1000.0)
+    assert first is not None and first.valve_percent > 0
+
+    warmer = replace(
+        inp, room_temperature=21.1, applied_valve_percent=first.valve_percent
+    )
+    out, _ = compute_mpc_v2(warmer, params, state, now=1010.0)
+
+    assert out is not None
+    assert out.valve_percent == 0
+
+
 def test_measured_supply_updates_existing_controller() -> None:
     """A new supply reading changes both plant grids without losing state."""
     first = replace(_baseline_input(), supply_temperature=35.0)

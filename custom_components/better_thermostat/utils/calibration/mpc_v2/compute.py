@@ -20,6 +20,11 @@ _LOGGER = logging.getLogger(__name__)
 # reference governor catches.
 OUTDOOR_TEMPERATURE_FALLBACK = 10.0
 
+# An MPC forecast may ask for steady heat with a low supply temperature even
+# though the room is already warm. Leave a small margin for sensor noise, but
+# never keep opening the valve after a clear comfort overshoot.
+COMFORT_OVERSHOOT_K = 0.2
+
 
 def _all_finite(*values: float | None) -> bool:
     """Return ``True`` when every non-None value passes ``math.isfinite``."""
@@ -144,6 +149,8 @@ def compute_mpc_v2(
         if inp.max_opening_percent is None
         else int(max(0.0, min(100.0, inp.max_opening_percent)))
     )
+    if inp.room_temperature > inp.target_temperature + COMFORT_OVERSHOOT_K:
+        cap_percent = 0
 
     u, diag = state.controller.step(
         t_s=now,
