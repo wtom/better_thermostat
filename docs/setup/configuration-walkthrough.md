@@ -27,6 +27,8 @@ This page explains the two setup screens in plain language and gives practical d
 - **Temperature sensor**: Your separate room temperature sensor. Accurate control depends on this one.
 - **Humidity sensor**: Currently just displays the humidity on your dashboard.
 - **Outdoor temperature sensor**: Select your outdoor sensor to let the system know when it's warm outside. Mount it in the shade: a sensor in the sun can keep the heating off on a cold day.
+- **MPC v2 heating supply temperature** (optional): Select the measured heating-circuit supply temperature. MPC v2 uses valid readings in place of its fixed 65 °C model reference. If the reading drops out, it keeps the last model value; a new controller starts from the reference.
+- **MPC v2 DHW diversion sensor** (optional): Select a signal that is `on`/`1` while domestic hot water diverts flow away from the radiators, and `off`/`0` during normal heating. During diversion, MPC v2 pauses planning and model fitting, and retains the last valve target. An unavailable diversion signal is treated as no heating flow.
 - **Window sensor**: Select your window sensor so the heating pauses automatically when you open a window.
 - **Door sensor**: Works like the window sensor, with its own delays. Heating resumes once every window and door is closed. See [Door sensor states](/faq/door-sensor).
 - **Weather entity to get the outdoor temperature**: An alternative to a physical outdoor sensor (like a weather forecast integration).
