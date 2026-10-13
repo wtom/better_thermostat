@@ -1665,6 +1665,12 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
             if event is not None:
                 request_control_cycle(self)
 
+    async def _trigger_mpc_v2_input_change(
+        self, event: Event[EventStateChangedData]
+    ) -> None:
+        """Re-plan promptly when measured supply or DHW diversion changes."""
+        request_control_cycle(self)
+
     async def _trigger_temperature_change(
         self, event: Event[EventStateChangedData]
     ) -> None:
@@ -3462,7 +3468,7 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
             if supply_entity_id is not None:
                 self.async_on_remove(
                     async_track_state_change_event(
-                        self.hass, [supply_entity_id], self._trigger_outdoor_change
+                        self.hass, [supply_entity_id], self._trigger_mpc_v2_input_change
                     )
                 )
         # One keepalive right away, so a TRV that mirrors the room temperature
