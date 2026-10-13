@@ -113,7 +113,7 @@ def test_low_supply_does_not_heat_room_clearly_above_target() -> None:
 
 
 def test_overshoot_closes_previous_plan_without_waiting_for_replan() -> None:
-    """The comfort cap applies even while MPC's old plan is still cached."""
+    """A warm room must close promptly without waiting for the next plan."""
     params = MpcV2Params(plant=make_plant_prior(0.0125, 0.00139))
     inp = replace(
         _baseline_input(
