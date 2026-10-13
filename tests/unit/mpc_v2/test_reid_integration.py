@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.components.climate.const import HVACMode
 from homeassistant.core import State
+import pytest
 
 from custom_components.better_thermostat.calibration import (
     _build_mpc_v2_reid_key,
@@ -184,6 +185,63 @@ def _make_bt(preset: StoredChoice = MpcV2PlantPreset.AUTO) -> Any:
         schedule_save_state=MagicMock(),
         is_removed=False,
     )
+
+
+@pytest.mark.parametrize(
+    ("raw", "unit", "expected"),
+    [
+        ("35", "°C", 35.0),
+        ("95", "°F", 35.0),
+        ("9", "°C", None),
+        ("91", "°C", None),
+        ("nan", "°C", None),
+        ("unavailable", "°C", None),
+    ],
+)
+def test_measured_supply_rejects_unusable_readings(raw, unit, expected) -> None:
+    bt = _make_bt()
+    bt.mpc_v2_supply_sensor_entity_id = "sensor.heating_supply"
+    reading = State("sensor.heating_supply", raw, {"unit_of_measurement": unit})
+    bt.hass = SimpleNamespace(states=SimpleNamespace(get=lambda _id: reading))
+
+    assert _get_mpc_v2_supply_temperature(bt) == expected
+
+
+def test_measured_supply_missing_state_does_not_replace_model_temperature() -> None:
+    bt = _make_bt()
+    bt.mpc_v2_supply_sensor_entity_id = "sensor.heating_supply"
+    bt.hass = SimpleNamespace(states=SimpleNamespace(get=lambda _id: None))
+
+    assert _get_mpc_v2_supply_temperature(bt) is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "available"),
+    [
+        ("0.0", True),
+        ("off", True),
+        ("false", True),
+        ("closed", True),
+        ("1.0", False),
+        ("on", False),
+        ("unknown", False),
+    ],
+)
+def test_dhw_diversion_signal_controls_heating_flow(raw, available) -> None:
+    bt = _make_bt()
+    bt.mpc_v2_dhw_sensor_entity_id = "sensor.dhw_pump"
+    reading = State("sensor.dhw_pump", raw)
+    bt.hass = SimpleNamespace(states=SimpleNamespace(get=lambda _id: reading))
+
+    assert _mpc_v2_heating_flow_available(bt) is available
+
+
+def test_missing_dhw_state_fails_closed() -> None:
+    bt = _make_bt()
+    bt.mpc_v2_dhw_sensor_entity_id = "sensor.dhw_pump"
+    bt.hass = SimpleNamespace(states=SimpleNamespace(get=lambda _id: None))
+
+    assert _mpc_v2_heating_flow_available(bt) is False
 
 
 def test_measured_supply_is_blocked_during_dhw() -> None:
