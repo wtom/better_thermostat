@@ -8,13 +8,21 @@ requests coalesce: a pending request already covers any state change
 that arrives before the cycle runs.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..climate import BetterThermostat
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def request_control_cycle(self, *, replace_pending: bool = False) -> None:
+def request_control_cycle(
+    self: BetterThermostat, *, replace_pending: bool = False
+) -> None:
     """Request one control cycle, coalescing with any pending request.
 
     Never blocks the caller. With ``replace_pending`` a stale pending
@@ -39,17 +47,12 @@ def request_control_cycle(self, *, replace_pending: bool = False) -> None:
             self.device_name,
         )
         return
-    try:
-        queue.put_nowait(self)
-    except asyncio.QueueFull:
-        # A cycle is already pending; it will see the new state.
-        _LOGGER.debug(
-            "better_thermostat %s: control cycle already pending, coalescing",
-            self.device_name,
-        )
+    # The queue is empty here, checked above or just drained, so the put
+    # cannot overflow it.
+    queue.put_nowait(self)
 
 
-def empty_queue(q: asyncio.Queue) -> None:
+def empty_queue(q: asyncio.Queue[BetterThermostat | None]) -> None:
     """Empty out a queue of pending items.
 
     Consumes all pending items from the queue and marks them as done.

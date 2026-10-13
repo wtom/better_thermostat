@@ -8,18 +8,18 @@ simulated device rather than on what Better Thermostat believes it sent.
 """
 
 from dataclasses import replace
+from datetime import timedelta
 from unittest.mock import patch
 
-from homeassistant.components.climate import (
-    DOMAIN as CLIMATE_DOMAIN,
-    SERVICE_SET_HVAC_MODE,
-    ClimateEntityFeature,
-    HVACMode,
-)
+from homeassistant.components.climate import ClimateEntityFeature, HVACMode
 from homeassistant.const import EVENT_CALL_SERVICE, UnitOfTemperature
+from homeassistant.core import Context
+from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_conversion import TemperatureConverter
 import pytest
 from pytest_homeassistant_custom_component.common import (
     async_capture_events,
+    async_fire_time_changed,
     async_mock_service,
 )
 
@@ -32,6 +32,7 @@ from .conftest import (
     build_devices,
     cooling_setpoint,
     make_entry,
+    mode_commands,
     profile_id,
     set_room_sensor,
     setup_entry,
@@ -44,20 +45,26 @@ from .device_profiles import (
     DUAL_ROLE,
     FAHRENHEIT_TRV,
     GENERIC_HEAT_TRV,
+    GROUP_SCENARIOS,
     HEAT_COOL_TRV,
     INTEGER_GRID_TRV,
     MQTT_OFFSET_TRV,
-    OFFSET_NUMBER_ID,
+    OFF_GRID_FAHRENHEIT_TRV,
     RANGED_COOLER,
+    ROLE_SCENARIOS,
     SEPARATE_COOLER,
+    SHAPES_FROM_REPORTS,
     SINGLE_ROLE_PROFILES,
     SPARE_HEAT_TRV,
     SPARE_TRV_ID,
     TADO_OFFSET_TRV,
     TRV_ID,
-    VALVE_NUMBER_ID,
     VALVE_TRV,
     DeviceProfile,
+    GroupScenario,
+    RoleScenario,
+    published_temperature,
+    published_unit,
 )
 
 
@@ -70,23 +77,6 @@ def _switched_off(profile: DeviceProfile) -> DeviceProfile:
     device can reach its heating mode.
     """
     return replace(profile, hvac_mode=HVACMode.OFF)
-
-
-def _mode_commands(events, entity_id: str) -> list[str]:
-    """The hvac modes dispatched at ``entity_id``, whatever became of them.
-
-    Read off the bus rather than off the device, because Home Assistant
-    rejects a mode the entity does not offer before the entity ever sees it:
-    a command that was never sent and one that was sent and refused are
-    indistinguishable at the device.
-    """
-    return [
-        event.data["service_data"]["hvac_mode"]
-        for event in events
-        if event.data["domain"] == CLIMATE_DOMAIN
-        and event.data["service"] == SERVICE_SET_HVAC_MODE
-        and event.data["service_data"].get("entity_id") == entity_id
-    ]
 
 
 @pytest.mark.parametrize(
@@ -207,7 +197,7 @@ async def test_device_without_an_offered_heating_mode_keeps_its_mode(
     # the mode, so by now the mode decision has been taken.
     assert await wait_for(hass, lambda: fake_trv.set_temperature_calls)
 
-    assert _mode_commands(dispatched, TRV_ID) == []
+    assert mode_commands(dispatched, TRV_ID) == []
     assert fake_trv.set_hvac_mode_calls == []
     assert hass.states.get(TRV_ID).state == HVACMode.OFF
     assert_on_device_grid(fake_trv.set_temperature_calls[-1], profile)
@@ -225,34 +215,45 @@ async def test_device_without_an_offered_heating_mode_keeps_its_mode(
 
 
 @pytest.mark.parametrize(
-    ("fake_trv", "expected_setpoint"),
+    ("fake_trv", "requested", "expected_setpoint"),
     [
-        pytest.param(GENERIC_HEAT_TRV, 20.5, id="generic_heat_trv"),
-        pytest.param(INTEGER_GRID_TRV, 21.0, id="integer_grid_trv"),
+        pytest.param(GENERIC_HEAT_TRV, 20.5, 20.5, id="generic_heat_trv"),
+        pytest.param(INTEGER_GRID_TRV, 20.5, 21.0, id="integer_grid_trv"),
+        pytest.param(FAHRENHEIT_TRV, 68.5, 69.0, id="fahrenheit_trv"),
     ],
     indirect=["fake_trv"],
 )
-async def test_setpoint_rounds_to_the_device_grid(hass, fake_trv, expected_setpoint):
+async def test_setpoint_rounds_to_the_device_grid(
+    hass, fake_trv, requested, expected_setpoint
+):
     """The setpoint arrives snapped to the grid the device publishes.
 
     The room sensor reads what the device reads, so the calibration is a
     no-op and the value under test is the target itself. A room demanding
     heat rounds it up onto the grid, so the whole-degree device receives
     the next full degree instead of a setpoint it is already sitting at.
+    Target and setpoint are both in the unit the device is published in: on
+    a Fahrenheit system the grid is whole degrees Fahrenheit, which is 5/9 K
+    in the Celsius the rounding happens in.
     """
-    set_room_sensor(hass, fake_trv.profile.current_temperature)
+    profile = fake_trv.profile
+    set_room_sensor(
+        hass,
+        published_temperature(profile, profile.current_temperature),
+        published_unit(profile),
+    )
     entry = make_entry(fake_trv.profile)
     await setup_entry(hass, entry)
     bt = await wait_for_startup(hass, entry)
     assert_profile_adopted(bt, fake_trv.profile)
-    assert await wait_for(hass, lambda: fake_trv.set_temperature_calls)
+    await hass.async_block_till_done()
 
     with patch(WRITE_BUDGET, 0.0):
         baseline = len(fake_trv.set_temperature_calls)
         await hass.services.async_call(
             "climate",
             "set_temperature",
-            {"entity_id": BT_ENTITY, "temperature": 20.5},
+            {"entity_id": BT_ENTITY, "temperature": requested},
             blocking=True,
         )
         assert await wait_for(
@@ -280,8 +281,19 @@ async def test_fahrenheit_device_is_read_and_written_in_its_own_unit(hass, fake_
     assert_profile_adopted(bt, profile)
 
     trv = bt.real_trvs[TRV_ID]
-    assert trv.min_temp == pytest.approx(5.0, abs=0.01)
-    assert trv.max_temp == pytest.approx(30.0, abs=0.01)
+    # 41 and 86 °F, read as 41.5 and 85.5: a whole degree Fahrenheit may be
+    # Home Assistant's rounding of the device's bound, so the bound is read
+    # half a degree inward.
+    assert trv.min_temp == pytest.approx(
+        TemperatureConverter.convert(
+            41.5, UnitOfTemperature.FAHRENHEIT, UnitOfTemperature.CELSIUS
+        )
+    )
+    assert trv.max_temp == pytest.approx(
+        TemperatureConverter.convert(
+            85.5, UnitOfTemperature.FAHRENHEIT, UnitOfTemperature.CELSIUS
+        )
+    )
     assert trv.target_temp_step == pytest.approx(0.5556, abs=1e-3)
 
     assert await wait_for(hass, lambda: fake_trv.set_temperature_calls)
@@ -290,16 +302,34 @@ async def test_fahrenheit_device_is_read_and_written_in_its_own_unit(hass, fake_
     assert_on_device_grid(written, profile)
 
 
-@pytest.mark.parametrize("fake_trv", [MQTT_OFFSET_TRV], indirect=True, ids=profile_id)
+@pytest.mark.parametrize(
+    "fake_trv",
+    [MQTT_OFFSET_TRV, OFF_GRID_FAHRENHEIT_TRV],
+    indirect=True,
+    ids=profile_id,
+)
 async def test_offset_reaches_the_calibration_number_entity(hass, fake_trv):
     """A device with a calibration number is corrected through that entity.
 
     The channel only exists because the device carries a registry entry: the
     calibration entity is found by walking the device the head belongs to.
+
+    The offset is a difference in Kelvin whatever unit the system publishes
+    in: a room 2 K warmer than the device reads is corrected by 2, not by the
+    3.6 the same difference measures in Fahrenheit.
     """
-    room = 21.0
-    expected_offset = room - fake_trv.profile.current_temperature
-    set_room_sensor(hass, room)
+    profile = fake_trv.profile
+    unit = published_unit(profile)
+    device_reading = TemperatureConverter.convert(
+        published_temperature(profile, profile.current_temperature),
+        unit,
+        UnitOfTemperature.CELSIUS,
+    )
+    expected_offset = 2.0
+    room = TemperatureConverter.convert(
+        device_reading + expected_offset, UnitOfTemperature.CELSIUS, unit
+    )
+    set_room_sensor(hass, room, unit)
     entry = make_entry(fake_trv.profile)
     await setup_entry(hass, entry)
     bt = await wait_for_startup(hass, entry)
@@ -315,7 +345,7 @@ async def test_offset_reaches_the_calibration_number_entity(hass, fake_trv):
             and offset_number.set_value_calls[-1] == pytest.approx(expected_offset)
         ),
     ), offset_number.set_value_calls
-    assert float(hass.states.get(OFFSET_NUMBER_ID).state) == pytest.approx(
+    assert float(hass.states.get(offset_number.entity_id).state) == pytest.approx(
         expected_offset
     )
     assert bt.real_trvs[TRV_ID].last_calibration == pytest.approx(expected_offset)
@@ -355,14 +385,16 @@ async def test_an_unanswered_offset_reopens_the_calibration_gate(hass, fake_trv)
         # The command went out and the device kept the value it had.
         lost = offset_number.set_value_calls[-1]
         assert trv.last_calibration == pytest.approx(lost)
-        assert float(hass.states.get(OFFSET_NUMBER_ID).state) != pytest.approx(lost)
+        assert float(hass.states.get(offset_number.entity_id).state) != pytest.approx(
+            lost
+        )
 
         # It is abandoned rather than waited on forever.
         assert await wait_for(hass, lambda: trv.calibration_received)
 
     # Better Thermostat still holds a command the device never took, so the
     # divergence the reconciler compares against is a real one.
-    reported = float(hass.states.get(OFFSET_NUMBER_ID).state)
+    reported = float(hass.states.get(offset_number.entity_id).state)
     assert trv.last_calibration != pytest.approx(reported)
 
 
@@ -415,8 +447,50 @@ async def test_valve_percentage_reaches_the_valve_number_entity(hass, fake_trv):
 
     opened = valve_number.set_value_calls[-1]
     assert 0.0 < opened <= 100.0
-    assert float(hass.states.get(VALVE_NUMBER_ID).state) == pytest.approx(opened)
+    assert float(hass.states.get(valve_number.entity_id).state) == pytest.approx(opened)
     assert bt.real_trvs[TRV_ID].last_valve_percent == pytest.approx(opened)
+
+
+@pytest.mark.parametrize("fake_trv", [VALVE_TRV], indirect=True, ids=profile_id)
+async def test_a_valve_closes_while_the_device_reports_no_temperature(hass, fake_trv):
+    """The valve follows the room while the device reports no reading of its own.
+
+    The percentage is sized from the room sensor; the device's internal
+    temperature only feeds the setpoint. A device that publishes no reading
+    of its own must not leave the valve where it was when the room warms up.
+    """
+    set_room_sensor(hass, 18.0)
+    entry = make_entry(fake_trv.profile)
+    await setup_entry(hass, entry)
+    bt = await wait_for_startup(hass, entry)
+    valve_number = fake_trv.valve_number
+
+    with patch(WRITE_BUDGET, 0.0):
+        await hass.services.async_call(
+            "climate",
+            "set_temperature",
+            {"entity_id": BT_ENTITY, "temperature": 22.0},
+            blocking=True,
+        )
+        assert await wait_for(
+            hass,
+            lambda: (
+                valve_number.set_value_calls and valve_number.set_value_calls[-1] > 0
+            ),
+        )
+
+        fake_trv._attr_current_temperature = None
+        fake_trv.async_write_ha_state()
+        assert await wait_for(
+            hass, lambda: bt.real_trvs[TRV_ID].current_temperature is None
+        )
+
+        set_room_sensor(hass, 24.0)
+        assert await wait_for(
+            hass, lambda: valve_number.set_value_calls[-1] == pytest.approx(0.0)
+        ), valve_number.set_value_calls
+
+    assert float(hass.states.get(valve_number.entity_id).state) == pytest.approx(0.0)
 
 
 async def test_options_flow_swaps_the_thermostat_to_a_device_less_entity(hass):
@@ -440,9 +514,9 @@ async def test_options_flow_swaps_the_thermostat_to_a_device_less_entity(hass):
     swapped = await hass.config_entries.options.async_configure(
         flow["flow_id"],
         {
-            "name": entry.data["name"],
+            "name": entry.options["name"],
             "thermostat": [SPARE_TRV_ID],
-            "temperature_sensor": entry.data["temperature_sensor"],
+            "temperature_sensor": entry.options["temperature_sensor"],
         },
     )
 
@@ -494,3 +568,93 @@ async def test_cooling_demand_reaches_the_cooler(hass, device_role):
         cooler.profile.supported_features & ClimateEntityFeature.TARGET_TEMPERATURE
     )
     assert isinstance(written, dict) is not takes_a_setpoint
+
+
+@pytest.mark.parametrize(
+    ("description", "shape"),
+    [
+        pytest.param(description, shape, id=description)
+        for description, shape in sorted(SHAPES_FROM_REPORTS.items())
+    ],
+)
+def test_every_reported_shape_is_still_in_the_matrix(description, shape):
+    """A shape a user reported stays in the matrix the suite runs over.
+
+    The regression test written for a report covers the one path the bug sat
+    on. What keeps the shape covered afterwards is its membership here: drop a
+    profile from the matrix and every parametrized test quietly stops running
+    against it, with nothing failing to say so.
+    """
+    if isinstance(shape, GroupScenario):
+        matrix = GROUP_SCENARIOS
+    elif isinstance(shape, RoleScenario):
+        matrix = ROLE_SCENARIOS
+    else:
+        matrix = SINGLE_ROLE_PROFILES
+
+    assert shape in matrix, f"{description} is no longer part of the matrix"
+
+
+HEAT_AND_AUTO_TRV = replace(
+    GENERIC_HEAT_TRV,
+    name="heat_and_auto_trv",
+    hvac_modes=(HVACMode.HEAT, HVACMode.AUTO, HVACMode.OFF),
+)
+"""A head offering heat and, besides it, an auto mode that runs its own schedule."""
+
+
+@pytest.mark.parametrize(
+    "room_mode", [HVACMode.HEAT, HVACMode.OFF], ids=["heating", "off"]
+)
+@pytest.mark.parametrize("fake_trv", [HEAT_AND_AUTO_TRV], indirect=True, ids=profile_id)
+async def test_an_unswapped_device_turned_to_auto_is_put_back_into_the_room_mode(
+    hass, fake_trv, room_mode
+):
+    """A device turned to auto without the swap option returns to the room's mode.
+
+    Without the swap option auto names neither heating nor off, so the room
+    keeps the mode it had, and the next control cycle writes that mode back
+    to the device.
+    """
+    set_room_sensor(hass, 18.0)
+    entry = make_entry(fake_trv.profile)
+    await setup_entry(hass, entry)
+    bt = await wait_for_startup(hass, entry)
+    with patch(WRITE_BUDGET, 0.0):
+        await hass.services.async_call(
+            "climate",
+            "set_hvac_mode",
+            {"entity_id": BT_ENTITY, "hvac_mode": room_mode},
+            blocking=True,
+        )
+        assert await wait_for(
+            hass, lambda: fake_trv.hvac_mode == room_mode and not bt.ignore_states
+        )
+    fake_trv.set_hvac_mode_calls.clear()
+
+    # A turn at the device reaches Home Assistant as a state the device
+    # publishes under a context of its own.
+    fake_trv._attr_hvac_mode = HVACMode.AUTO
+    fake_trv.async_set_context(Context())
+    fake_trv.async_write_ha_state()
+    await hass.async_block_till_done()
+    assert await wait_for(
+        hass,
+        lambda: (
+            not any(
+                task.get_name().startswith("bt_trigger_trv_change")
+                for task in bt._owned_tasks
+            )
+        ),
+    )
+
+    assert bt.bt_hvac_mode == room_mode
+    assert hass.states.get(BT_ENTITY).state == room_mode
+
+    with patch(WRITE_BUDGET, 0.0):
+        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=6))
+        assert await wait_for(hass, lambda: fake_trv.set_hvac_mode_calls)
+
+    assert fake_trv.set_hvac_mode_calls == [room_mode]
+    assert hass.states.get(TRV_ID).state == room_mode
+    assert bt.bt_hvac_mode == room_mode

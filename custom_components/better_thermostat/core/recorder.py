@@ -103,13 +103,6 @@ def _float_or_none(value: Json) -> float | None:
     return float(value)
 
 
-def _float_of(value: Json) -> float:
-    number = _float_or_none(value)
-    if number is None:
-        raise ValueError("expected a number, got None")
-    return number
-
-
 def _float_or_default(value: Json, default: float) -> float:
     """Read a required float, substituting ``default`` for null.
 
@@ -228,6 +221,11 @@ class FlightRecorder:
         ]
 
 
+def _renamed_key(raw: dict[str, Json], key: str, earlier: str) -> Json:
+    """Return ``raw[key]`` when present, or ``raw[earlier]`` when the export uses the earlier key."""
+    return raw[key] if key in raw else raw[earlier]
+
+
 def snapshot_from_dict(data: dict[str, Json]) -> WorldSnapshot:
     """Reconstruct a WorldSnapshot from its exported form."""
     trvs = {}
@@ -237,13 +235,17 @@ def snapshot_from_dict(data: dict[str, Json]) -> WorldSnapshot:
             entity_id=_str_of(raw["entity_id"]),
             available=_bool_of(raw["available"]),
             hvac_mode=parse_hvac_mode(_str_or_none(raw["hvac_mode"])),
-            current_temp=_float_or_none(raw["current_temp"]),
+            current_temperature=_float_or_none(raw["current_temperature"]),
             setpoint=_float_or_none(raw["setpoint"]),
             min_temp=_float_or_none(raw["min_temp"]),
             max_temp=_float_or_none(raw["max_temp"]),
             valve_max_opening=_float_or_none(raw["valve_max_opening"]),
-            local_calibration_min=_float_or_none(raw["local_calibration_min"]),
-            local_calibration_max=_float_or_none(raw["local_calibration_max"]),
+            min_local_calibration=_float_or_none(
+                _renamed_key(raw, "min_local_calibration", "local_calibration_min")
+            ),
+            max_local_calibration=_float_or_none(
+                _renamed_key(raw, "max_local_calibration", "local_calibration_max")
+            ),
         )
     now = _datetime_or_none(data["now"])
     if now is None:
@@ -256,17 +258,22 @@ def snapshot_from_dict(data: dict[str, Json]) -> WorldSnapshot:
     return WorldSnapshot(
         now=now,
         now_monotonic=_float_or_default(data["now_monotonic"], 0.0),
-        target_temp=_float_or_none(data["target_temp"]),
-        target_cooltemp=_float_or_none(data["target_cooltemp"]),
+        heat_target_temperature=_float_or_none(data["heat_target_temperature"]),
+        cool_target_temperature=_float_or_none(data["cool_target_temperature"]),
         hvac_mode=parse_hvac_mode(_str_or_none(data["hvac_mode"])),
-        room_temp=_float_or_none(data["room_temp"]),
-        room_temp_filtered=_float_or_none(data["room_temp_filtered"]),
-        temp_slope=_float_or_none(data["temp_slope"]),
+        room_temperature=_float_or_none(data["room_temperature"]),
+        room_temperature_filtered=_float_or_none(data["room_temperature_filtered"]),
+        # An export carries the slope as temperature_slope or as temp_slope.
+        temperature_slope=_float_or_none(
+            data["temperature_slope"]
+            if "temperature_slope" in data
+            else data["temp_slope"]
+        ),
         call_for_heat=_bool_of(data["call_for_heat"]),
         window_open=_bool_or_none(data.get("window_open")),
         preset_mode=_str_or_none(data["preset_mode"]),
         tolerance=_float_or_default(data["tolerance"], 0.0),
-        outdoor_temp=_float_or_none(data["outdoor_temp"]),
+        outdoor_temperature=_float_or_none(data["outdoor_temperature"]),
         is_day=_bool_of(data["is_day"]),
         solar_intensity=_float_or_default(data["solar_intensity"], 0.0),
         min_temp=_float_or_none(data["min_temp"]),
@@ -350,7 +357,7 @@ def desired_from_dict(data: dict[str, Json]) -> DesiredState:
             hvac_mode=parse_hvac_mode(_str_or_none(raw["hvac_mode"])),
             setpoint=_float_or_none(raw["setpoint"]),
             valve_percent=_float_or_none(raw["valve_percent"]),
-            offset=_float_or_none(raw["offset"]),
+            calibration_offset=_float_or_none(raw["calibration_offset"]),
             suppression=(
                 Suppression(_str_of(raw["suppression"]))
                 if raw["suppression"] is not None

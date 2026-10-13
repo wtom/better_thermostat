@@ -10,6 +10,7 @@ from custom_components.better_thermostat.core.decide import decide, running_kern
 from custom_components.better_thermostat.core.fsm.window import WindowPhase, WindowState
 from custom_components.better_thermostat.core.recorder import (
     FlightRecorder,
+    Json,
     replay,
     snapshot_from_dict,
     state_from_dict,
@@ -25,9 +26,9 @@ def _snapshot(target=21.0) -> WorldSnapshot:
     return WorldSnapshot(
         now=datetime(2026, 1, 10, 7, 0, tzinfo=UTC),
         now_monotonic=1000.0,
-        target_temp=target,
+        heat_target_temperature=target,
         hvac_mode=HvacMode.HEAT,
-        room_temp=19.0,
+        room_temperature=19.0,
         call_for_heat=True,
         tolerance=0.3,
         trvs={
@@ -35,7 +36,7 @@ def _snapshot(target=21.0) -> WorldSnapshot:
                 entity_id="climate.trv",
                 available=True,
                 hvac_mode=HvacMode.HEAT,
-                current_temp=20.0,
+                current_temperature=20.0,
                 setpoint=21.0,
                 min_temp=5.0,
                 max_temp=30.0,
@@ -43,6 +44,12 @@ def _snapshot(target=21.0) -> WorldSnapshot:
             )
         },
     )
+
+
+def _json_object(value: Json) -> dict[str, Json]:
+    """Narrow one exported value to the JSON object it is."""
+    assert isinstance(value, dict)
+    return value
 
 
 def _record_one(recorder: FlightRecorder, snapshot: WorldSnapshot) -> None:
@@ -63,7 +70,9 @@ class TestRingBuffer:
             _record_one(recorder, _snapshot(target=target))
         assert len(recorder) == 3
         exported = recorder.export()
-        assert [e["snapshot"]["target_temp"] for e in exported] == [21.0, 22.0, 23.0]
+        assert [
+            _json_object(e["snapshot"])["heat_target_temperature"] for e in exported
+        ] == [21.0, 22.0, 23.0]
 
     def test_negative_capacity_is_rejected(self):
         """A negative capacity is caught at construction, not on first record."""
@@ -83,9 +92,10 @@ class TestRingBuffer:
         desired, state = decide(snapshot, state)
         recorder.record(snapshot, state, desired)
         with pytest.raises(FrozenInstanceError):
-            state.last_control_monotonic = 999.0
+            setattr(state, "last_control_monotonic", 999.0)
         state = replace(state, last_control_monotonic=999.0)
-        assert recorder.export()[0]["state"]["last_control_monotonic"] is None
+        recorded_state = _json_object(recorder.export()[0]["state"])
+        assert recorded_state["last_control_monotonic"] is None
 
 
 class TestExport:
@@ -97,19 +107,21 @@ class TestExport:
         _record_one(recorder, _snapshot())
         payload = json.loads(json.dumps(recorder.export()))
         entry = payload[0]
-        assert entry["snapshot"]["trvs"]["climate.trv"]["current_temp"] == 20.0
+        assert entry["snapshot"]["trvs"]["climate.trv"]["current_temperature"] == 20.0
         assert entry["desired"]["trvs"]["climate.trv"]["hvac_mode"] == "heat"
         assert entry["state"]["window"]["phase"] == "closed"
 
     def test_non_finite_floats_export_as_none(self):
         """NaN/inf in a recorded snapshot never reach the JSON payload."""
         recorder = FlightRecorder()
-        snapshot = replace(_snapshot(), room_temp=float("nan"), temp_slope=float("inf"))
+        snapshot = replace(
+            _snapshot(), room_temperature=float("nan"), temperature_slope=float("inf")
+        )
         _record_one(recorder, snapshot)
         exported = recorder.export()
-        entry = exported[0]["snapshot"]
-        assert entry["room_temp"] is None
-        assert entry["temp_slope"] is None
+        entry = _json_object(exported[0]["snapshot"])
+        assert entry["room_temperature"] is None
+        assert entry["temperature_slope"] is None
         json.dumps(exported, allow_nan=False)
 
 
@@ -254,9 +266,9 @@ def test_replay_roundtrips_reachability_and_null_window_state():
     snapshot = WorldSnapshot(
         now=datetime(2026, 1, 10, 7, 0, tzinfo=UTC),
         now_monotonic=1000.0,
-        target_temp=21.0,
+        heat_target_temperature=21.0,
         hvac_mode=HvacMode.HEAT,
-        room_temp=19.0,
+        room_temperature=19.0,
         call_for_heat=True,
         trvs={"climate.t": _TrvReported(entity_id="climate.t", available=False)},
     )
@@ -321,6 +333,40 @@ def test_state_without_pending_target_field_loads():
     assert rebuilt.control_mode.pending_target is None
 
 
+def test_snapshot_exported_as_temperature_slope_loads():
+    """Exports from before the slope's rename still reconstruct and replay."""
+    recorder = FlightRecorder()
+    snapshot = replace(_snapshot(), temperature_slope=0.02)
+    desired, _ = decide(snapshot, running_kernel_state())
+    recorder.record(snapshot, running_kernel_state(), desired)
+    entry = json.loads(json.dumps(recorder.export()))[0]
+    entry["snapshot"]["temp_slope"] = entry["snapshot"].pop("temperature_slope")
+
+    assert snapshot_from_dict(entry["snapshot"]).temperature_slope == 0.02
+    matches, _ = replay(entry)
+    assert matches is True
+
+
+def test_snapshot_exported_with_the_earlier_calibration_limit_keys_loads():
+    """Exports that name the TRV calibration limits the earlier way still load."""
+    recorder = FlightRecorder()
+    snapshot = _snapshot()
+    desired, _ = decide(snapshot, running_kernel_state())
+    recorder.record(snapshot, running_kernel_state(), desired)
+    entry = json.loads(json.dumps(recorder.export()))[0]
+    for raw in entry["snapshot"]["trvs"].values():
+        raw["min_local_calibration"] = -5.0
+        raw["max_local_calibration"] = 5.0
+        raw["local_calibration_min"] = raw.pop("min_local_calibration")
+        raw["local_calibration_max"] = raw.pop("max_local_calibration")
+
+    rebuilt = snapshot_from_dict(entry["snapshot"])
+
+    assert rebuilt.trvs
+    for trv in rebuilt.trvs.values():
+        assert (trv.min_local_calibration, trv.max_local_calibration) == (-5.0, 5.0)
+
+
 class TestRoundtripCompleteness:
     """Every field of every recorded type survives export and reconstruct.
 
@@ -362,30 +408,30 @@ class TestRoundtripCompleteness:
             "entity_id": "climate.trv",
             "available": False,
             "hvac_mode": HvacMode.HEAT,
-            "current_temp": 20.5,
+            "current_temperature": 20.5,
             "setpoint": 21.5,
             "min_temp": 6.0,
             "max_temp": 29.0,
             "valve_max_opening": 80.0,
-            "local_calibration_min": -4.0,
-            "local_calibration_max": 4.0,
+            "min_local_calibration": -4.0,
+            "max_local_calibration": 4.0,
         }
         assert set(trv_reported_kwargs) == {f.name for f in fields(TrvReported)}
 
         snapshot_kwargs = {
             "now": datetime(2026, 1, 10, 7, 0, tzinfo=UTC),
             "now_monotonic": 1000.0,
-            "target_temp": 21.0,
-            "target_cooltemp": 24.0,
+            "heat_target_temperature": 21.0,
+            "cool_target_temperature": 24.0,
             "hvac_mode": HvacMode.HEAT,
-            "room_temp": 19.0,
-            "room_temp_filtered": 19.1,
-            "temp_slope": 0.02,
+            "room_temperature": 19.0,
+            "room_temperature_filtered": 19.1,
+            "temperature_slope": 0.02,
             "call_for_heat": True,
             "window_open": True,
             "preset_mode": "eco",
             "tolerance": 0.3,
-            "outdoor_temp": 5.5,
+            "outdoor_temperature": 5.5,
             "is_day": False,
             "solar_intensity": 0.4,
             "min_temp": 5.0,
@@ -431,7 +477,7 @@ class TestRoundtripCompleteness:
             "hvac_mode": HvacMode.HEAT,
             "setpoint": 21.5,
             "valve_percent": 60.0,
-            "offset": -1.5,
+            "calibration_offset": -1.5,
             "suppression": Suppression.WINDOW,
         }
         assert set(trv_desired_kwargs) == {f.name for f in fields(TrvDesired)}

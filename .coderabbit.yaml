@@ -25,6 +25,7 @@ reviews:
     # ("auto reviews disabled on non-default branch").
     base_branches:
       - "develop"
+      - "1.9"
 
     # PRs are opened as draft by default and marked ready later, so review them
     # while still draft — except genuine work-in-progress (see keywords below).
@@ -46,15 +47,47 @@ reviews:
   path_instructions:
     - path: "tests/**"
       instructions: >-
-        Tests run with `uv run pytest -p no:homeassistant`. Every test function
-        and class needs a docstring (ruff pydocstyle "D" rules are enforced).
+        Tests run with `uv run pytest tests/`. Do not suggest
+        `-p no:homeassistant`: that flag removes the plugin providing the
+        `hass` fixture and makes the whole integration suite error.
+        `asyncio_mode = "auto"` is set, so async tests need no marker at all —
+        do not ask for `@pytest.mark.asyncio` to be added, and where a marker
+        is present, match the one the surrounding class already uses.
+        Ruff's pydocstyle "D" rules are switched off for `tests/**` via
+        `per-file-ignores`, so NumPy `Parameters` sections are not required
+        here; what a docstring has to say is what the test pins and why.
         Follow the existing patterns: MagicMock + real dicts for `real_trvs`,
-        `State()` for HA states, `@pytest.mark.asyncio` / `AsyncMock` for async.
+        `State()` for HA states, `AsyncMock` for async collaborators.
+    - path: "custom_components/better_thermostat/utils/controlling.py"
+      instructions: >-
+        `control_trv` deliberately records a setpoint as a possible echo
+        BEFORE the write leaves for the device (`remember_setpoint_written`
+        ahead of `override_set_temperature`/`set_temperature`), and records
+        the value the delegate actually sent afterwards. This is the fix for
+        a device that takes a write Better Thermostat never sees confirmed
+        and then keeps reporting it: the service call and the device's own
+        state are not one transaction, so a write that raises, times out or
+        is cancelled may still have reached the device. Do NOT suggest moving
+        the recording after a successful dispatch, and do NOT suggest
+        removing the entry when the write fails — either would drop the echo
+        candidate for exactly the failure path the mechanism exists for, and
+        `trigger_trv_change()` would then adopt the device's echo as a user
+        press. The known cost is stated in the code: a knob turned onto a
+        remembered write before the device confirms reads as an echo. That
+        candidate is bounded and a confirmation retires it.
     - path: "custom_components/better_thermostat/**"
       instructions: >-
         Home Assistant custom integration. Comments must describe the current
         (IS) state only — no change history or PR references. Public functions,
         classes and methods need docstrings.
+        Docstrings follow the NumPy convention that ruff's pydocstyle rules
+        enforce; ruff decides which sections are required. Private helpers
+        (a leading underscore) and property getters may be documented in
+        prose alone, as most of them are: do not ask for `Parameters` or
+        `Returns` sections to be added there. Where a docstring does carry
+        sections, their order is still worth a finding: the extended summary
+        comes before `Parameters`, and a function returning a value
+        documents it under `Returns` rather than in the parameter list.
     - path: "**/*.py"
       instructions: >-
         This project targets Python 3.14+ (`requires-python = ">=3.14.2"`) and
@@ -72,8 +105,7 @@ reviews:
     # ruff is the linter and formatter of record for this repo.
     ruff:
       enabled: true
-    # Disabled: pylint crashed in CodeRabbit's sandbox on a prior review and
-    # would only duplicate ruff.
+    # pylint would only repeat the PL rules ruff already selects.
     pylint:
       enabled: false
 

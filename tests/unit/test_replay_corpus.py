@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from custom_components.better_thermostat.core.decide import decide
+from custom_components.better_thermostat.core.decide import KernelState, decide
 from custom_components.better_thermostat.core.fsm.control_mode import (
     ControlMode,
     ControlModeState,
@@ -31,14 +31,22 @@ from custom_components.better_thermostat.core.fsm.maintenance import (
 from custom_components.better_thermostat.core.fsm.mode import ModeState
 from custom_components.better_thermostat.core.fsm.reachability import ReachabilityState
 from custom_components.better_thermostat.core.fsm.window import WindowPhase, WindowState
-from custom_components.better_thermostat.core.recorder import FlightRecorder, replay
-from custom_components.better_thermostat.core.snapshot import HvacMode, TrvReported
+from custom_components.better_thermostat.core.recorder import (
+    FlightRecorder,
+    Json,
+    replay,
+)
+from custom_components.better_thermostat.core.snapshot import (
+    HvacMode,
+    TrvReported,
+    WorldSnapshot,
+)
 from tests.factories import make_snapshot, make_state
 
 GOLDEN_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "replay_corpus"
 
 
-def _scenarios() -> dict[str, tuple]:
+def _scenarios() -> dict[str, tuple[WorldSnapshot, KernelState]]:
     """One (snapshot, state) pair per kernel decision tier.
 
     Returns
@@ -47,7 +55,7 @@ def _scenarios() -> dict[str, tuple]:
         Mapping of scenario name to its ``(snapshot, state)`` pair.
     """
     return {
-        "heating_cold_room": (make_snapshot(room_temp=18.0), make_state()),
+        "heating_cold_room": (make_snapshot(room_temperature=18.0), make_state()),
         "no_call_for_heat": (make_snapshot(call_for_heat=False), make_state()),
         "off_mode": (
             make_snapshot(hvac_mode=HvacMode.OFF),
@@ -56,6 +64,10 @@ def _scenarios() -> dict[str, tuple]:
         "window_open": (
             make_snapshot(),
             make_state(window=WindowState(phase=WindowPhase.OPEN)),
+        ),
+        "door_open": (
+            make_snapshot(),
+            make_state(door=WindowState(phase=WindowPhase.OPEN)),
         ),
         "startup_running": (make_snapshot(), make_state(lifecycle=LifecycleState())),
         "maintenance_running": (
@@ -84,7 +96,7 @@ def _scenarios() -> dict[str, tuple]:
             ),
         ),
         "hold_rung": (
-            make_snapshot(room_temp=None),
+            make_snapshot(room_temperature=None),
             make_state(
                 control_mode=ControlModeState(
                     mode=ControlMode.HOLD, degraded_since=700.0
@@ -102,7 +114,7 @@ def _scenarios() -> dict[str, tuple]:
     }
 
 
-def _export_entry(name: str) -> dict:
+def _export_entry(name: str) -> dict[str, Json]:
     """Export one recorded decision entry for the named scenario.
 
     Parameters

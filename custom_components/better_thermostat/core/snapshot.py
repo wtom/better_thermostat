@@ -36,7 +36,7 @@ def parse_hvac_mode(value: str | None) -> HvacMode | None:
     if value is None:
         return None
     try:
-        return HvacMode(str(value))
+        return HvacMode(value)
     except ValueError:
         return None
 
@@ -48,13 +48,13 @@ class TrvReported:
     entity_id: str
     available: bool = True
     hvac_mode: HvacMode | None = None
-    current_temp: float | None = None
+    current_temperature: float | None = None
     setpoint: float | None = None
     min_temp: float | None = None
     max_temp: float | None = None
     valve_max_opening: float | None = None
-    local_calibration_min: float | None = None
-    local_calibration_max: float | None = None
+    min_local_calibration: float | None = None
+    max_local_calibration: float | None = None
 
 
 @dataclass(frozen=True)
@@ -63,12 +63,12 @@ class WorldSnapshot:
 
     now: datetime
     now_monotonic: float
-    target_temp: float | None = None
-    target_cooltemp: float | None = None
+    heat_target_temperature: float | None = None
+    cool_target_temperature: float | None = None
     hvac_mode: HvacMode | None = None
-    room_temp: float | None = None
-    room_temp_filtered: float | None = None
-    temp_slope: float | None = None
+    room_temperature: float | None = None
+    room_temperature_filtered: float | None = None
+    temperature_slope: float | None = None
     call_for_heat: bool = True
     # Raw window-sensor reading at snapshot time (None: no sensor
     # configured). Pure observation for the flight recorder — the
@@ -76,7 +76,7 @@ class WorldSnapshot:
     window_open: bool | None = None
     preset_mode: str | None = None
     tolerance: float = 0.0
-    outdoor_temp: float | None = None
+    outdoor_temperature: float | None = None
     is_day: bool = True
     solar_intensity: float = 0.0
     min_temp: float | None = None

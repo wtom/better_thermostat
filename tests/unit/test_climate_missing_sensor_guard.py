@@ -17,6 +17,7 @@ from custom_components.better_thermostat.climate import BetterThermostat
 from custom_components.better_thermostat.core.clock import FakeClock
 from custom_components.better_thermostat.core.decide import KernelState
 from custom_components.better_thermostat.trv import Trv
+from tests.factories import ThermostatStandIn
 
 _CLIMATE = "custom_components.better_thermostat.climate"
 TRV_ID = "climate.test_trv"
@@ -24,30 +25,35 @@ TRV_ID = "climate.test_trv"
 
 def _bt_without_sensor():
     """Build a minimal BetterThermostat mock with no room sensor configured."""
-    mock = MagicMock()
+    mock = ThermostatStandIn()
     mock.device_name = "Test BT"
     mock.is_removed = False
     mock.version = "1.0.0"
     mock.kernel_state = KernelState()
     mock.clock = FakeClock()
+    type(mock).startup_running = BetterThermostat.startup_running
     mock.real_trvs = {TRV_ID: Trv(entity_id=TRV_ID, advanced={})}
     mock.entity_ids = [TRV_ID]
     mock.all_trvs = None
-    mock.all_entities = []
+    mock.all_entities = list[str]()
     mock.sensor_entity_id = None
     mock.humidity_sensor_entity_id = None
-    mock.window_id = None
-    mock.door_id = None
+    mock.window_sensor_entity_id = None
+    mock.door_sensor_entity_id = None
     mock.cooler_entity_id = None
-    mock.outdoor_sensor = None
-    mock.weather_entity = None
-    mock.unavailable_sensors = []
+    mock.outdoor_sensor_entity_id = None
+    mock.weather_entity_id = None
+    mock.unavailable_sensors = list[str]()
     mock._degraded_warning_emitted = False
     mock._degraded_grace_until = None
     mock._async_unsub_state_changed = None
     mock._trigger_time = AsyncMock()
     mock._trigger_check_weather = AsyncMock()
     mock._startup_control_trvs = AsyncMock()
+    mock._initialize_arrived_trvs = AsyncMock()
+    mock._hand_over_room_sensor_state = AsyncMock()
+    mock._hand_over_humidity_state = AsyncMock()
+    mock._hand_over_contact_states = AsyncMock()
     mock.hass = MagicMock()
     return mock
 
@@ -81,7 +87,7 @@ async def test_finalize_startup_logs_error_and_skips_listeners(caplog):
     with (
         caplog.at_level(logging.ERROR),
         patch(f"{_CLIMATE}.await_critical_entities", AsyncMock()),
-        patch(f"{_CLIMATE}.check_critical_entities", AsyncMock(return_value=True)),
+        patch(f"{_CLIMATE}.check_critical_entities", AsyncMock()),
         patch(f"{_CLIMATE}.await_optional_sensors", AsyncMock()),
         patch(f"{_CLIMATE}.check_and_update_degraded_mode", AsyncMock()),
         patch(f"{_CLIMATE}.async_track_time_interval", MagicMock()),

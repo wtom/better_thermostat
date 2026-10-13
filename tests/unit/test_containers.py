@@ -50,26 +50,26 @@ class TestConfigIsFrozen:
         """The container itself is frozen."""
         config = BtConfig(device_name="Test BT")
         with pytest.raises(FrozenInstanceError):
-            config.tolerance = 1.0
+            setattr(config, "tolerance", 1.0)
 
     def test_config_bridges_are_read_only(self):
         """The entity bridges for config fields have no setter."""
         bare = _bare_entity()
         assert bare.tolerance == 0.3
         with pytest.raises(AttributeError):
-            bare.tolerance = 1.0
+            setattr(bare, "tolerance", 1.0)
         with pytest.raises(AttributeError):
-            bare.device_name = "other"
+            setattr(bare, "device_name", "other")
 
 
 class TestRuntimeAndLearnedBridges:
     """Runtime and learned bridges read and write their containers."""
 
     def test_runtime_bridge_roundtrip(self):
-        """Writing the historical attribute lands in the runtime container."""
+        """Writing the flat attribute lands in the runtime container."""
         bare = _bare_entity()
-        bare.cur_temp = 21.5
-        assert bare.runtime.cur_temp == 21.5
+        bare.room_temperature = 21.5
+        assert bare.runtime.room_temperature == 21.5
         bare.runtime.call_for_heat = False
         assert bare.call_for_heat is False
 
@@ -90,4 +90,4 @@ class TestRuntimeAndLearnedBridges:
         )
         assert bare.window_open is True
         with pytest.raises(AttributeError):
-            bare.window_open = False
+            setattr(bare, "window_open", False)

@@ -7,13 +7,17 @@ did a control cycle complete recently?
 
 from __future__ import annotations
 
+# Interval of the periodic tick that recomputes balance and calibration. A
+# calibration mode sees a control cycle at least this often while it runs.
+CONTROL_TICK_S = 300.0
+
 WATCHDOG_MAX_AGE_S = 900.0
 
 
 def control_loop_stalled(
     last_control_monotonic: float | None,
     now: float,
-    max_age_s: float = WATCHDOG_MAX_AGE_S,
+    max_age_seconds: float = WATCHDOG_MAX_AGE_S,
 ) -> bool:
     """Whether the control loop has silently stalled.
 
@@ -22,4 +26,4 @@ def control_loop_stalled(
     """
     if last_control_monotonic is None:
         return False
-    return (now - last_control_monotonic) > max_age_s
+    return (now - last_control_monotonic) > max_age_seconds

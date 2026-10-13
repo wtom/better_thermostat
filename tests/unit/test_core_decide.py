@@ -251,7 +251,9 @@ class TestReachability:
     def test_boost_keeps_commanding_offline_trvs(self):
         """Active boost heating overrides the reachability skip."""
         desired, _ = decide(
-            self._snapshot(preset_mode="boost", room_temp=18.0, target_temp=22.0),
+            self._snapshot(
+                preset_mode="boost", room_temperature=18.0, heat_target_temperature=22.0
+            ),
             make_state(window=WindowState(phase=WindowPhase.OPEN)),
         )
         assert set(desired.trvs) == {"climate.up", "climate.down"}
@@ -259,7 +261,9 @@ class TestReachability:
     def test_boost_without_heat_demand_does_not_override(self):
         """Boost at/above target does not force-command offline TRVs."""
         desired, _ = decide(
-            self._snapshot(preset_mode="boost", room_temp=22.5, target_temp=22.0),
+            self._snapshot(
+                preset_mode="boost", room_temperature=22.5, heat_target_temperature=22.0
+            ),
             make_state(window=WindowState(phase=WindowPhase.OPEN)),
         )
         assert set(desired.trvs) == {"climate.up"}
@@ -406,7 +410,7 @@ class TestHoldRung:
             assert trv.hvac_mode == HvacMode.HEAT
             assert trv.setpoint == 21.0
             assert trv.valve_percent is None
-            assert trv.offset is None
+            assert trv.calibration_offset is None
 
     def test_hold_keeps_mode_suppression(self):
         """The OFF/window tiers stay above the rung."""

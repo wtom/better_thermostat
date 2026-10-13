@@ -19,15 +19,23 @@ from custom_components.better_thermostat.utils.calibration.mpc_v2_internals.plan
 )
 
 
-def _sample(t_s: float, T_room: float, u: float, **kw: object) -> ReidSample:
+def _sample(
+    t_s: float,
+    T_room: float,
+    u: float,
+    *,
+    outdoor: float | None = 5.0,
+    trv: float | None = None,
+    window: bool = False,
+) -> ReidSample:
     """Build a ReidSample with sane defaults for outdoor/window."""
     return ReidSample(
         t_s=t_s,
-        T_room_C=T_room,
+        T_room=T_room,
         u_frac=u,
-        T_outdoor_C=kw.get("outdoor", 5.0),
-        T_trv_C=kw.get("trv"),
-        window_open=bool(kw.get("window", False)),
+        T_outdoor=outdoor,
+        T_trv=trv,
+        window_open=window,
     )
 
 
@@ -112,7 +120,7 @@ def test_missing_outdoor_disqualifies_samples() -> None:
     """Samples without an outdoor reading cannot be simulated and are cut."""
     samples = _stream((18.0, 21.0, 1.0, 12))
     for s in samples:
-        s.T_outdoor_C = None
+        s.T_outdoor = None
     assert extract_segments(samples, ReidConfig()) == []
 
 
@@ -126,7 +134,7 @@ def test_warm_cooldown_requires_colder_outdoors() -> None:
     """An idle temperature drop with warm outdoors (solar night?) is skipped."""
     samples = _stream((22.0, 20.0, 0.0, 16))
     for s in samples:
-        s.T_outdoor_C = 25.0
+        s.T_outdoor = 25.0
     assert extract_segments(samples, ReidConfig()) == []
 
 
@@ -182,7 +190,7 @@ def _generate_day(
                 i += 1
             h_min = step_s / 60.0
             dT_rad = (
-                truth.gain_heater * u * (truth.T_water_C - T_rad) - (T_rad - T_room)
+                truth.gain_heater * u * (truth.T_water - T_rad) - (T_rad - T_room)
             ) / truth.tau_rad_min
             dT_room = (
                 truth.coupling_rad_room * (T_rad - T_room) - (T_room - T_outdoor)
@@ -268,7 +276,7 @@ def test_simulate_room_seeds_radiator_from_trv() -> None:
     )
     with_trv = _simulate_room(PlantParams(), seg, substep_s=150.0)
     for s in seg.samples:
-        s.T_trv_C = None
+        s.T_trv = None
     without_trv = _simulate_room(PlantParams(), seg, substep_s=150.0)
     # A hot radiator keeps feeding the room; the seeded run must end warmer.
     assert with_trv[-1] > without_trv[-1]

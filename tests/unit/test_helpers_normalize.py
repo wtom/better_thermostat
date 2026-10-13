@@ -56,8 +56,15 @@ class TestNormalizeCalibrationMode:
     def test_returns_none_for_invalid_types(self):
         """Test that invalid types return None."""
         assert normalize_calibration_mode(123) is None
-        assert normalize_calibration_mode([]) is None
-        assert normalize_calibration_mode({}) is None
+
+    @pytest.mark.parametrize("stored", [0, 0.0])
+    def test_numeric_zero_reads_as_default(self, stored):
+        """A stored numeric 0 is the DEFAULT calibration mode."""
+        assert normalize_calibration_mode(stored) is CalibrationMode.DEFAULT
+
+    def test_a_number_without_an_integer_value_is_no_mode(self):
+        """NaN has no integer value and maps to no calibration mode."""
+        assert normalize_calibration_mode(float("nan")) is None
 
 
 class TestIsCalibrationMode:

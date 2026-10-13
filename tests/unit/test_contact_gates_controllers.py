@@ -15,7 +15,6 @@ the valve is what reaches the device either way.
 
 from __future__ import annotations
 
-import importlib.util
 from types import SimpleNamespace
 from typing import Any
 
@@ -38,12 +37,10 @@ from custom_components.better_thermostat.utils.calibration.mpc_v2 import (
 from custom_components.better_thermostat.utils.calibration.tpi import TpiState
 from custom_components.better_thermostat.utils.const import (
     CalibrationMode,
-    CalibrationType,
+    CalibrationOutput,
     MpcV2PlantPreset,
 )
 from custom_components.better_thermostat.utils.state_manager import MpcV2ReidRuntime
-
-_HAS_DAQP = importlib.util.find_spec("daqp") is not None
 
 
 class _InMemoryStateManager:
@@ -97,7 +94,7 @@ def _valve_trv(entity_id: str, mode: CalibrationMode) -> Trv:
         current_temperature=19.0,
         valve_max_opening=100.0,
         advanced={
-            "calibration": CalibrationType.DIRECT_VALVE_BASED,
+            "calibration": CalibrationOutput.DIRECT_VALVE_BASED,
             "calibration_mode": mode,
             "mpc_v2_plant_preset": MpcV2PlantPreset.AUTO,
         },
@@ -112,22 +109,22 @@ def _bt(real_trvs: dict[str, Trv], *, window_open: bool, door_open: bool) -> Any
     """Build a BT-shaped stand-in with a cold room asking for heat."""
     return SimpleNamespace(
         real_trvs=real_trvs,
-        bt_target_temp=21.0,
-        cur_temp=19.0,
-        cur_temp_filtered=None,
+        heat_target_temperature=21.0,
+        room_temperature=19.0,
+        room_temperature_filtered=None,
         tolerance=0.0,
-        temp_slope=None,
+        temperature_slope=None,
         window_open=window_open,
         door_open=door_open,
-        contact_open=bool(window_open) or bool(door_open),
+        contact_open=window_open or door_open,
         device_name="BT_TEST",
         bt_hvac_mode=HVACMode.HEAT,
         heating_power=0.04,
         heat_loss_rate=0.02,
-        outdoor_sensor=None,
-        weather_entity=None,
+        outdoor_sensor_entity_id=None,
+        weather_entity_id=None,
         hass=None,
-        _unique_id="bt_contact_gate",
+        unique_id="bt_contact_gate",
         device_id="bt_contact_gate_device",
         entry_id="bt_contact_gate_entry",
         state_mgr=_InMemoryStateManager(),
@@ -150,7 +147,7 @@ def _commanded_valve_percent(output: Any, balance: Any) -> float | None:
         return balance.get("valve_percent")
     if output is None:
         return None
-    for attribute in ("valve_percent", "duty_cycle_pct"):
+    for attribute in ("valve_percent", "duty_cycle_percent"):
         if hasattr(output, attribute):
             return getattr(output, attribute)
     return None
@@ -160,10 +157,7 @@ CONTROLLERS = [
     pytest.param(CalibrationMode.MPC_CALIBRATION, _compute_mpc_balance, id="mpc"),
     pytest.param(CalibrationMode.TPI_CALIBRATION, _compute_tpi_balance, id="tpi"),
     pytest.param(
-        CalibrationMode.MPC_V2_CALIBRATION,
-        _compute_mpc_v2_balance,
-        id="mpc_v2",
-        marks=pytest.mark.skipif(not _HAS_DAQP, reason="MPC v2 needs the daqp solver"),
+        CalibrationMode.MPC_V2_CALIBRATION, _compute_mpc_v2_balance, id="mpc_v2"
     ),
 ]
 

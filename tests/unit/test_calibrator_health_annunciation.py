@@ -6,7 +6,6 @@ through their own reporters, so the two paths cannot flap each other.
 """
 
 import logging
-from unittest.mock import MagicMock
 
 from custom_components.better_thermostat.core.calibrator import CalibratorHealth
 from custom_components.better_thermostat.trv import Trv
@@ -15,15 +14,16 @@ from custom_components.better_thermostat.utils.calibration.strategies import (
     annunciate_health,
 )
 from custom_components.better_thermostat.utils.const import CalibrationMode
+from tests.factories import ThermostatStandIn
 
 ENTITY_ID = "climate.trv"
 
 
 def _bt():
-    bt = MagicMock()
+    bt = ThermostatStandIn()
     bt.device_name = "Test BT"
-    bt.cur_temp = 20.0
-    bt.bt_target_temp = 21.0
+    bt.room_temperature = 20.0
+    bt.heat_target_temperature = 21.0
     bt.real_trvs = {ENTITY_ID: Trv(entity_id=ENTITY_ID)}
     return bt
 
@@ -34,7 +34,7 @@ def _strategy(percents):
     return BalanceStrategy(
         mode=CalibrationMode.PID_CALIBRATION,
         compute=lambda bt, eid: (next(feed), False),
-        percent_of=lambda result: result,
+        percent_of=lambda result: result if isinstance(result, float) else None,
     )
 
 

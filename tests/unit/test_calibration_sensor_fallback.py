@@ -1,14 +1,16 @@
 """Tests that balance calibration keeps working under SENSOR_FALLBACK.
 
-When the external room sensor is dead (``cur_temp`` is ``None``) and the
-control mode ladder sits on SENSOR_FALLBACK, ``effective_room_temp()``
+When the external room sensor is dead (``room_temperature`` is ``None``) and the
+control mode ladder sits on SENSOR_FALLBACK, ``effective_room_temperature()``
 substitutes the mean of the TRV-internal temperatures. The balance
 computations must consult that fallback instead of bailing out on the
-bare ``cur_temp`` reading — and must still skip when no temperature is
+bare ``room_temperature`` reading — and must still skip when no temperature is
 available at all.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+
+from homeassistant.core import State
 
 from custom_components.better_thermostat.calibration import (
     _compute_mpc_balance,
@@ -17,7 +19,11 @@ from custom_components.better_thermostat.calibration import (
     _compute_tpi_balance,
     _record_mpc_v2_reid_sample,
 )
-from custom_components.better_thermostat.core.fsm.control_mode import ControlMode
+from custom_components.better_thermostat.core.clock import FakeClock
+from custom_components.better_thermostat.core.fsm.control_mode import (
+    ControlMode,
+    ControlModeState,
+)
 from custom_components.better_thermostat.trv import Trv
 from custom_components.better_thermostat.utils.calibration.mpc import (
     MpcState,
@@ -26,13 +32,14 @@ from custom_components.better_thermostat.utils.calibration.mpc import (
 from custom_components.better_thermostat.utils.calibration.mpc_v2 import MpcV2State
 from custom_components.better_thermostat.utils.calibration.pid import (
     PIDState,
-    build_pid_key,
+    build_pid_loop_key,
 )
 from custom_components.better_thermostat.utils.calibration.tpi import (
     TpiState,
     build_tpi_key,
 )
 from custom_components.better_thermostat.utils.state_manager import MpcV2ReidRuntime
+from tests.factories import ThermostatStandIn, make_state
 
 
 class _StateStub:
@@ -91,36 +98,47 @@ class _StateStub:
         return self.mpc_v2_reid_runtime.setdefault(key, MpcV2ReidRuntime())
 
 
-def _make_bt(state_mgr: _StateStub, trv_temp: float | None) -> MagicMock:
+def _make_bt(state_mgr: _StateStub, trv_temperature: float | None) -> ThermostatStandIn:
     """Return a BetterThermostat mock in SENSOR_FALLBACK with a dead room sensor."""
-    bt = MagicMock()
+    bt = ThermostatStandIn()
     bt.device_name = "Test BT"
     bt.unique_id = "uid"
-    bt.bt_target_temp = 22.0
-    bt.cur_temp = None
-    bt.cur_temp_filtered = None
-    bt.temp_slope = 0.0
+    bt.heat_target_temperature = 22.0
+    bt.room_temperature = None
+    bt.room_temperature_filtered = None
+    bt.temperature_slope = 0.0
     bt.tolerance = 0.0
     bt.window_open = False
     bt.door_open = False
     bt.contact_open = False
     bt.bt_hvac_mode = "heat"
-    bt.outdoor_sensor = None
-    bt.weather_entity = None
+    bt.outdoor_sensor_entity_id = None
+    bt.weather_entity_id = None
     bt.heating_power = None
     bt.heat_loss_rate = None
-    bt.clock.monotonic.return_value = 100.0
-    bt.hass.states.get.return_value = None
-    bt.kernel_state.control_mode.mode = ControlMode.SENSOR_FALLBACK
+    bt.clock = FakeClock(monotonic_value=100.0)
+    # The TRV itself is reachable and reports its temperature; every other
+    # entity is absent.
+    bt.hass.states.get.side_effect = lambda entity_id: (
+        State(
+            entity_id,
+            "heat",
+            {} if trv_temperature is None else {"current_temperature": trv_temperature},
+        )
+        if entity_id == "climate.trv"
+        else None
+    )
+    bt.hass.config.units.temperature_unit = "°C"
+    bt.kernel_state = make_state(
+        control_mode=ControlModeState(mode=ControlMode.SENSOR_FALLBACK)
+    )
     bt.real_trvs = {
-        "climate.trv": Trv.from_legacy_dict(
-            "climate.trv",
-            {
-                "advanced": {},
-                "current_temperature": trv_temp,
-                "min_temp": 5.0,
-                "max_temp": 30.0,
-            },
+        "climate.trv": Trv(
+            entity_id="climate.trv",
+            advanced={},
+            current_temperature=trv_temperature,
+            min_temp=5.0,
+            max_temp=30.0,
         )
     }
     bt.state_mgr = state_mgr
@@ -130,7 +148,7 @@ def _make_bt(state_mgr: _StateStub, trv_temp: float | None) -> MagicMock:
 def test_mpc_balance_uses_trv_temperature_when_room_sensor_is_dead() -> None:
     """MPC keeps computing on the TRV-internal temperature under SENSOR_FALLBACK."""
     state_mgr = _StateStub()
-    bt = _make_bt(state_mgr, trv_temp=21.0)
+    bt = _make_bt(state_mgr, trv_temperature=21.0)
 
     payload, _ = _compute_mpc_balance(bt, "climate.trv")
 
@@ -142,7 +160,7 @@ def test_mpc_balance_uses_trv_temperature_when_room_sensor_is_dead() -> None:
 def test_tpi_balance_uses_trv_temperature_when_room_sensor_is_dead() -> None:
     """TPI keeps computing on the TRV-internal temperature under SENSOR_FALLBACK."""
     state_mgr = _StateStub()
-    bt = _make_bt(state_mgr, trv_temp=21.0)
+    bt = _make_bt(state_mgr, trv_temperature=21.0)
 
     payload, _ = _compute_tpi_balance(bt, "climate.trv")
 
@@ -155,20 +173,20 @@ def test_tpi_balance_uses_trv_temperature_when_room_sensor_is_dead() -> None:
 def test_pid_balance_uses_trv_temperature_when_room_sensor_is_dead() -> None:
     """PID keeps computing on the TRV-internal temperature under SENSOR_FALLBACK."""
     state_mgr = _StateStub()
-    bt = _make_bt(state_mgr, trv_temp=21.0)
+    bt = _make_bt(state_mgr, trv_temperature=21.0)
 
     percent, _ = _compute_pid_balance(bt, "climate.trv")
 
     assert percent is not None
     assert bt.real_trvs["climate.trv"].calibration_balance is not None
-    # error = |target - trv temp| = |22.0 - 21.0|
-    assert state_mgr.pid[build_pid_key(bt, "climate.trv")].last_abs_error == 1.0
+    # error = |target - trv temperature| = |22.0 - 21.0|
+    assert state_mgr.pid[build_pid_loop_key(bt, "climate.trv")].last_abs_error == 1.0
 
 
 def test_mpc_balance_skips_when_no_temperature_is_available() -> None:
     """MPC still bails out when neither room nor TRV temperature exists."""
     state_mgr = _StateStub()
-    bt = _make_bt(state_mgr, trv_temp=None)
+    bt = _make_bt(state_mgr, trv_temperature=None)
 
     payload, supports_valve = _compute_mpc_balance(bt, "climate.trv")
 
@@ -180,7 +198,7 @@ def test_mpc_balance_skips_when_no_temperature_is_available() -> None:
 def test_tpi_balance_skips_when_no_temperature_is_available() -> None:
     """TPI still bails out when neither room nor TRV temperature exists."""
     state_mgr = _StateStub()
-    bt = _make_bt(state_mgr, trv_temp=None)
+    bt = _make_bt(state_mgr, trv_temperature=None)
 
     payload, supports_valve = _compute_tpi_balance(bt, "climate.trv")
 
@@ -192,7 +210,7 @@ def test_tpi_balance_skips_when_no_temperature_is_available() -> None:
 def test_pid_balance_skips_when_no_temperature_is_available() -> None:
     """PID still bails out when neither room nor TRV temperature exists."""
     state_mgr = _StateStub()
-    bt = _make_bt(state_mgr, trv_temp=None)
+    bt = _make_bt(state_mgr, trv_temperature=None)
 
     percent, supports_valve = _compute_pid_balance(bt, "climate.trv")
 
@@ -204,7 +222,7 @@ def test_pid_balance_skips_when_no_temperature_is_available() -> None:
 def test_mpc_v2_balance_uses_trv_temperature_when_room_sensor_is_dead() -> None:
     """MPC v2 keeps computing on the TRV-internal temperature under SENSOR_FALLBACK."""
     state_mgr = _StateStub()
-    bt = _make_bt(state_mgr, trv_temp=21.0)
+    bt = _make_bt(state_mgr, trv_temperature=21.0)
 
     payload, _ = _compute_mpc_v2_balance(bt, "climate.trv")
 
@@ -215,7 +233,7 @@ def test_mpc_v2_balance_uses_trv_temperature_when_room_sensor_is_dead() -> None:
 def test_mpc_v2_balance_skips_when_no_temperature_is_available() -> None:
     """MPC v2 still bails out when neither room nor TRV temperature exists."""
     state_mgr = _StateStub()
-    bt = _make_bt(state_mgr, trv_temp=None)
+    bt = _make_bt(state_mgr, trv_temperature=None)
 
     payload, supports_valve = _compute_mpc_v2_balance(bt, "climate.trv")
 
@@ -227,7 +245,7 @@ def test_mpc_v2_balance_skips_when_no_temperature_is_available() -> None:
 def test_mpc_v2_compute_treats_open_door_as_open_contact() -> None:
     """The controller input reports an open contact when only the door is open."""
     state_mgr = _StateStub()
-    bt = _make_bt(state_mgr, trv_temp=21.0)
+    bt = _make_bt(state_mgr, trv_temperature=21.0)
     bt.window_open = False
     bt.door_open = True
     bt.contact_open = bool(bt.window_open) or bool(bt.door_open)
@@ -252,22 +270,50 @@ def test_reid_sample_records_open_door_as_open_contact() -> None:
 
     Free-cooldown fitting relies on the ``window_open`` flag to cut
     segments; a door open with the window shut must set it as well,
-    while ``T_room_C`` keeps coming from the real room sensor.
+    while ``T_room`` keeps coming from the real room sensor.
     """
     state_mgr = _StateStub()
-    bt = _make_bt(state_mgr, trv_temp=21.0)
+    bt = _make_bt(state_mgr, trv_temperature=21.0)
     # Sampling is gated to the OPTIMAL rung; the door flag is orthogonal.
-    bt.kernel_state.control_mode.mode = ControlMode.OPTIMAL
-    bt.cur_temp = 20.5
+    bt.kernel_state = make_state()
+    bt.room_temperature = 20.5
     bt.window_open = False
     bt.door_open = True
     bt.contact_open = bool(bt.window_open) or bool(bt.door_open)
 
     _record_mpc_v2_reid_sample(
-        bt, "key", applied_valve_pct=40.0, trv_temp=21.0, outdoor_temp=5.0
+        bt,
+        "key",
+        applied_valve_percent=40.0,
+        trv_temperature=21.0,
+        outdoor_temperature=5.0,
     )
 
     samples = state_mgr.get_mpc_v2_reid_runtime("key").buffer.samples
     assert len(samples) == 1
     assert samples[0].window_open is True
-    assert samples[0].T_room_C == 20.5
+    assert samples[0].T_room == 20.5
+
+
+def test_reid_sample_without_a_confirmed_valve_reading_records_nothing() -> None:
+    """A cycle whose valve position was never confirmed leaves the buffer empty.
+
+    The re-identification fit reads ``u_frac`` as the valve input the room
+    actually saw. A group pass and an unconfirmed write both leave the
+    confirmed position at ``None``, and the proposal that was computed for
+    that cycle is not evidence the valve reached it.
+    """
+    state_mgr = _StateStub()
+    bt = _make_bt(state_mgr, trv_temperature=21.0)
+    bt.kernel_state = make_state()
+    bt.room_temperature = 20.5
+
+    _record_mpc_v2_reid_sample(
+        bt,
+        "key",
+        applied_valve_percent=None,
+        trv_temperature=21.0,
+        outdoor_temperature=5.0,
+    )
+
+    assert state_mgr.get_mpc_v2_reid_runtime("key").buffer.samples == []

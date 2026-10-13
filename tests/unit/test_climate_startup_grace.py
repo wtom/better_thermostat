@@ -30,6 +30,7 @@ from custom_components.better_thermostat.utils.watcher import (
     STARTUP_DEGRADED_GRACE_PERIOD,
     check_and_update_degraded_mode,
 )
+from tests.factories import ThermostatStandIn
 
 _CLIMATE = "custom_components.better_thermostat.climate"
 _WATCHER = "custom_components.better_thermostat.utils.watcher"
@@ -40,30 +41,42 @@ WEATHER_ID = "weather.home"
 
 def _startup_bt():
     """Build a minimal BetterThermostat mock for _finalize_startup."""
-    mock = MagicMock()
+    mock = ThermostatStandIn()
     mock.device_name = "Test BT"
     mock.is_removed = False
     mock.kernel_state = KernelState()
     mock.clock = FakeClock()
+    type(mock).startup_running = BetterThermostat.startup_running
     mock.real_trvs = {TRV_ID: Trv(entity_id=TRV_ID, advanced={})}
     mock.entity_ids = [TRV_ID]
     mock.all_trvs = None
-    mock.all_entities = []
+    mock.all_entities = list[str]()
     mock.sensor_entity_id = SENSOR_ID
     mock.humidity_sensor_entity_id = None
-    mock.window_id = None
-    mock.door_id = None
+    mock.window_sensor_entity_id = None
+    mock.door_sensor_entity_id = None
     mock.cooler_entity_id = None
-    mock.outdoor_sensor = None
-    mock.weather_entity = None
-    mock.unavailable_sensors = []
+    mock.outdoor_sensor_entity_id = None
+    mock.weather_entity_id = None
+    mock.unavailable_sensors = list[str]()
+    # Real containers, not MagicMock attributes: the battery path reads both
+    # and a MagicMock answers every lookup with a truthy stand-in, which
+    # sends it down branches this mock never meant to exercise.
+    mock.devices_states = dict[str, dict[str, object]]()
+    mock._next_battery_read = dict[str, float]()
     mock._degraded_warning_emitted = False
     mock._degraded_grace_until = None
     mock._async_unsub_state_changed = None
     mock._trigger_time = AsyncMock()
     mock._trigger_check_weather = AsyncMock()
     mock._startup_control_trvs = AsyncMock()
+    mock._initialize_arrived_trvs = AsyncMock()
+    mock._hand_over_room_sensor_state = AsyncMock()
+    mock._hand_over_humidity_state = AsyncMock()
+    mock._hand_over_contact_states = AsyncMock()
     mock.async_update_ha_state = AsyncMock()
+    mock.in_maintenance = False
+    mock.control_queue_task = asyncio.Queue(maxsize=1)
     mock.hass = MagicMock()
     return mock
 
@@ -72,7 +85,7 @@ async def _run_finalize_startup(bt, *, patch_degraded_check=True):
     """Run _finalize_startup with the external hooks patched."""
     patches = [
         patch(f"{_CLIMATE}.await_critical_entities", AsyncMock()),
-        patch(f"{_CLIMATE}.check_critical_entities", AsyncMock(return_value=True)),
+        patch(f"{_CLIMATE}.check_critical_entities", AsyncMock()),
         patch(f"{_CLIMATE}.await_optional_sensors", AsyncMock()),
         patch(f"{_CLIMATE}.async_track_time_interval", MagicMock()),
         patch(f"{_CLIMATE}.async_track_state_change_event", MagicMock()),
@@ -90,7 +103,7 @@ async def _run_finalize_startup(bt, *, patch_degraded_check=True):
 def _startup_loop_bt():
     """Build a mock for startup() with an unavailable optional weather entity."""
     bt = _startup_bt()
-    bt.weather_entity = WEATHER_ID
+    bt.weather_entity_id = WEATHER_ID
     bt.version = "1.0.0"
     bt._check_entities_ready = MagicMock(return_value=True)
     bt._collect_trv_states = MagicMock(return_value=[])
@@ -142,7 +155,7 @@ async def test_startup_arms_grace_before_the_first_degraded_check(caplog):
         # the warning and the repair issue fire.
         bt.clock.advance(STARTUP_DEGRADED_GRACE_PERIOD.total_seconds() + 1)
         with patch(
-            "custom_components.better_thermostat.utils.helpers.async_fire_logbook_entry",
+            "custom_components.better_thermostat.utils.watcher.async_fire_logbook_entry",
             AsyncMock(),
         ):
             await check_and_update_degraded_mode(bt)
@@ -249,7 +262,7 @@ async def test_degraded_sensor_stays_silent_during_grace_and_warns_after(caplog)
 
         bt.clock.advance(STARTUP_DEGRADED_GRACE_PERIOD.total_seconds() + 1)
         with patch(
-            "custom_components.better_thermostat.utils.helpers.async_fire_logbook_entry",
+            "custom_components.better_thermostat.utils.watcher.async_fire_logbook_entry",
             AsyncMock(),
         ):
             await check_and_update_degraded_mode(bt)

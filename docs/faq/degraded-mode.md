@@ -6,8 +6,9 @@ slug: faq/degraded-mode
 
 Better Thermostat raises a **degraded mode** repair issue when one of the
 sensors it was configured with becomes unavailable: the room temperature
-sensor, the window sensor, the humidity sensor, the outdoor sensor, or the
-weather entity. The thermostat keeps running; the issue tells you that it
+sensor, the window sensor, the door sensor, the humidity sensor, the
+outdoor sensor, or the weather entity. An unavailable cooling device
+counts as well. The thermostat keeps running; the issue tells you that it
 is working with less information than you configured.
 
 During the first five minutes after startup the warning is suppressed so
@@ -30,6 +31,13 @@ quality steps down a ladder, one rung at a time:
    and the TRVs keep their last commanded state. Frost protection stays
    enforced on every write.
 
+TRVs that regulate on a room temperature Better Thermostat writes into
+them, such as the Sonoff TRVZB, stop receiving it while the room sensor
+gives no reading. Better Thermostat does not keep sending the sensor's last
+value, so the TRV falls back to its own sensor after its own timeout (two
+hours on a TRVZB). The first reading after the outage is written to the TRV
+at once.
+
 A rung steps down after the loss has persisted for about two minutes, and
 climbs back up after the sensors have been stable again for about five
 minutes, so short sensor flaps do not flip the behavior back and forth.
@@ -38,11 +46,11 @@ minutes, so short sensor flaps do not flip the behavior back and forth.
 
 The Better Thermostat climate entity exposes the rung as the
 `control_mode` attribute (`optimal`, `sensor_fallback`, or `hold`),
-along with `degraded_for_s` (how long the degradation has lasted) and
+along with `degraded_for_seconds` (how long the degradation has lasted) and
 `unavailable_sensors`. The `calibrator_health` attribute reports per
-TRV whether its calibration controller is healthy or has self-healed
-(for example after a poisoned learning state) or shows oscillating
-output. Check them under **Developer tools → States**.
+TRV the health of its calibration controller: `healthy`, `non_finite`
+(a learned value was not a number), `oscillating`, `runaway_gains`, or
+`windup_suspect`. Check them under **Developer tools → States**.
 
 ## What you should do
 
@@ -52,4 +60,5 @@ output. Check them under **Developer tools → States**.
   provides them.
 
 The repair issue disappears on its own once all configured sensors are
-available again.
+available again. Taking a sensor that is gone for good out of the Better
+Thermostat's settings clears it as well.

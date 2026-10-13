@@ -5,14 +5,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from custom_components.better_thermostat.climate import BetterThermostat
 from custom_components.better_thermostat.utils.scheduler import (
     empty_queue,
     request_control_cycle,
 )
+from tests.factories import ThermostatStandIn
 
 
 def _make_bt() -> MagicMock:
-    bt = MagicMock()
+    bt = ThermostatStandIn()
     bt.device_name = "Test BT"
     bt.control_queue_task = asyncio.Queue(maxsize=1)
     return bt
@@ -52,9 +54,9 @@ class TestRequestControlCycle:
 @pytest.mark.asyncio
 async def test_empty_queue_drains_and_marks_done():
     """empty_queue consumes every pending item and marks it done."""
-    queue = asyncio.Queue()
-    queue.put_nowait(1)
-    queue.put_nowait(2)
+    queue: asyncio.Queue[BetterThermostat | None] = asyncio.Queue()
+    queue.put_nowait(None)
+    queue.put_nowait(None)
     empty_queue(queue)
     assert queue.empty()
     # join() must not block after the drain: all items were marked done.

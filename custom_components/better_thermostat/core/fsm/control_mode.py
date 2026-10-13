@@ -3,10 +3,11 @@
 The rungs:
 
 * OPTIMAL — the room sensor delivers; the control law works as configured.
-* SENSOR_FALLBACK — the room sensor is unavailable but at least one TRV
-  reports an internal temperature: after a short debounce the
-  calibration substitutes the mean of the available TRV-internal
-  temperatures for the room temperature. Controlling on a hot-valve
+* SENSOR_FALLBACK — the room sensor is unavailable or reports no
+  plausible temperature, but at least one TRV reports an internal
+  temperature: after a short debounce the calibration substitutes the
+  mean of the available TRV-internal temperatures for the room
+  temperature. Controlling on a hot-valve
   sensor is worse than on a room sensor, but strictly better than
   controlling on a silently stale reading.
 * HOLD — neither room sensor nor any TRV temperature is usable: the
@@ -15,12 +16,16 @@ The rungs:
 
 Transitions degrade quickly (small debounce) and recover slowly: the
 ladder only climbs back up after the capability has been continuously
-restored for ``up_stability_s`` (hysteresis against flapping sensors).
+restored for ``up_stability_seconds`` (hysteresis against flapping sensors).
 
 The region is not persisted across restarts: the ladder starts at
 OPTIMAL and re-derives its rung from live observations within one
 debounce window. A persisted rung could only pin stale degradation —
-the observations it was derived from are gone after a restart.
+the observations it was derived from are gone after a restart. The one
+exception is a room sensor that has no plausible reading when startup goes
+ahead: startup puts the ladder on SENSOR_FALLBACK directly, because a
+missing sensor has already been missing for longer than the debounce and
+an implausible reading gives the room nothing else to start on.
 """
 
 from __future__ import annotations
@@ -41,8 +46,15 @@ class ControlMode(StrEnum):
 class LadderParams:
     """Timing of the ladder transitions in seconds."""
 
-    down_debounce_s: float = 120.0
-    up_stability_s: float = 300.0
+    down_debounce_seconds: float = 120.0
+    up_stability_seconds: float = 300.0
+
+
+# Interval of the periodic ladder evaluation, shorter than both windows of
+# ``LadderParams``. A sensor that stops reporting produces no events, so this
+# tick supplies the evaluation that commits its rung, at most one interval
+# after the window has elapsed.
+LADDER_TICK_S = 60.0
 
 
 @dataclass(frozen=True)
@@ -98,10 +110,10 @@ def step(
     )
 
 
-def _target_rung(room_sensor_ok: bool, trv_temp_ok: bool) -> ControlMode:
+def _target_rung(room_sensor_ok: bool, trv_temperature_ok: bool) -> ControlMode:
     if room_sensor_ok:
         return ControlMode.OPTIMAL
-    if trv_temp_ok:
+    if trv_temperature_ok:
         return ControlMode.SENSOR_FALLBACK
     return ControlMode.HOLD
 
@@ -118,14 +130,14 @@ def step_ladder(
     state: ControlModeState,
     *,
     room_sensor_ok: bool,
-    trv_temp_ok: bool,
+    trv_temperature_ok: bool,
     now: float,
     params: LadderParams,
 ) -> ControlModeState:
     """Advance the ladder rung from the capability observation.
 
-    Downgrades commit after ``down_debounce_s`` of sustained loss;
-    upgrades commit after ``up_stability_s`` of sustained recovery.
+    Downgrades commit after ``down_debounce_seconds`` of sustained loss;
+    upgrades commit after ``up_stability_seconds`` of sustained recovery.
     The window is bound to its direction, not to one exact rung: it
     keeps running as long as the observation stays on the same side of
     the current rung (deeper while degrading, shallower while
@@ -136,15 +148,21 @@ def step_ladder(
     bookkeeping from scratch; a rung beyond the committed one must earn
     its own full window afterwards.
     """
-    target = _target_rung(room_sensor_ok, trv_temp_ok)
+    target = _target_rung(room_sensor_ok, trv_temperature_ok)
 
     if target == state.mode:
         return _with_pending(state, down=None, up=None, target=None)
 
     deeper = _depth(target) > _depth(state.mode)
-    threshold_s = params.down_debounce_s if deeper else params.up_stability_s
+    threshold_seconds = (
+        params.down_debounce_seconds if deeper else params.up_stability_seconds
+    )
     return _advance_window(
-        state, target=target, now=now, threshold_s=threshold_s, deeper=deeper
+        state,
+        target=target,
+        now=now,
+        threshold_seconds=threshold_seconds,
+        deeper=deeper,
     )
 
 
@@ -169,7 +187,7 @@ def _advance_window(
     *,
     target: ControlMode,
     now: float,
-    threshold_s: float,
+    threshold_seconds: float,
     deeper: bool,
 ) -> ControlModeState:
     """Run the direction-bound commit window toward ``target``.
@@ -192,12 +210,22 @@ def _advance_window(
     else:
         since = now
         commit_rung = target
-    if now - since >= threshold_s:
+    if now - since >= threshold_seconds:
         committed = _with_mode(state, commit_rung)
         if commit_rung == target:
             return committed
         return _pend_toward(committed, deeper, now, target)
     return _pend_toward(state, deeper, since, commit_rung)
+
+
+def start_on_rung(state: ControlModeState, mode: ControlMode) -> ControlModeState:
+    """Put the ladder on ``mode`` without running a debounce window.
+
+    For an observation that outlasted the window before the ladder was
+    evaluated for the first time. Any pending window is dropped, and the
+    annunciation half is kept as it is.
+    """
+    return _with_mode(state, mode)
 
 
 def _with_mode(state: ControlModeState, mode: ControlMode) -> ControlModeState:

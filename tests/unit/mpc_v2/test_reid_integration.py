@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 from types import SimpleNamespace
-from typing import Any
-from unittest.mock import AsyncMock, patch
+from typing import Any, override
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.components.climate.const import HVACMode
+from homeassistant.core import State
 
 from custom_components.better_thermostat.calibration import _compute_mpc_v2_balance
 from custom_components.better_thermostat.core.clock import FakeClock
@@ -22,9 +24,10 @@ from custom_components.better_thermostat.utils.calibration.mpc_v2 import (
 )
 from custom_components.better_thermostat.utils.const import (
     CalibrationMode,
-    CalibrationType,
+    CalibrationOutput,
     MpcV2PlantPreset,
 )
+from custom_components.better_thermostat.utils.entry_schema import StoredChoice
 from custom_components.better_thermostat.utils.state_manager import (
     MpcV2ReidData,
     RuntimeState,
@@ -35,11 +38,11 @@ from custom_components.better_thermostat.utils.state_manager import (
 )
 
 _REID = MpcV2ReidData(
-    tau_room_min=240.0,
+    tau_room_minutes=240.0,
     gain_heater=3.0,
     fitted_ts=1000.0,
-    rmse_prior_K=0.4,
-    rmse_fit_K=0.1,
+    rmse_prior_kelvin=0.4,
+    rmse_fit_kelvin=0.1,
     n_segments=4,
 )
 
@@ -57,9 +60,9 @@ def _warm(mgr: StateManager, key: str, params: MpcV2Params) -> None:
     _out, state = compute_mpc_v2(
         MpcV2Input(
             key=key,
-            target_temp_C=22.0,
-            current_temp_C=19.0,
-            outdoor_temp_C=5.0,
+            target_temperature=22.0,
+            room_temperature=19.0,
+            outdoor_temperature=5.0,
             heating_allowed=True,
             window_open=False,
         ),
@@ -89,14 +92,14 @@ def test_adopt_is_bumpless() -> None:
     mgr.adopt_mpc_v2_reid("k", _REID)
 
     new_params = MpcV2Params()
-    new_params.plant.tau_room_min = _REID.tau_room_min
+    new_params.plant.tau_room_min = _REID.tau_room_minutes
     new_params.plant.gain_heater = _REID.gain_heater
     rebuilt = mgr.get_mpc_v2_live("k", new_params)
     assert rebuilt is not old
     assert rebuilt.controller is not None
     assert rebuilt.controller is not old.controller
     assert rebuilt.controller._last_u == last_u_before
-    assert rebuilt.controller.plant_fine.params.tau_room_min == _REID.tau_room_min
+    assert rebuilt.controller.plant_fine.params.tau_room_min == _REID.tau_room_minutes
 
 
 def test_adopt_marks_dirty_and_result_readable() -> None:
@@ -106,7 +109,7 @@ def test_adopt_marks_dirty_and_result_readable() -> None:
     assert mgr.dirty is True
     stored = mgr.get_mpc_v2_reid("k")
     assert stored is not None
-    assert stored.tau_room_min == 240.0
+    assert stored.tau_room_minutes == 240.0
 
 
 def test_reid_result_survives_serialization_round_trip() -> None:
@@ -115,7 +118,7 @@ def test_reid_result_survives_serialization_round_trip() -> None:
     mgr.adopt_mpc_v2_reid("k", _REID)
     raw = _serialize(mgr.state)
     restored = _deserialize(raw)
-    assert restored.mpc_v2_reid["k"].tau_room_min == 240.0
+    assert restored.mpc_v2_reid["k"].tau_room_minutes == 240.0
     assert restored.mpc_v2_reid["k"].gain_heater == 3.0
     assert restored.mpc_v2_reid["k"].n_segments == 4
 
@@ -125,20 +128,20 @@ def test_deserialize_rejects_malformed_reid_payload() -> None:
     assert deserialize_mpc_v2_reid({"tau_room_min": 0.0, "gain_heater": 2.0}) is None
     assert deserialize_mpc_v2_reid({"tau_room_min": "junk"}) is None
     ok = deserialize_mpc_v2_reid({"tau_room_min": 300.0, "gain_heater": 2.5})
-    assert ok is not None and ok.tau_room_min == 300.0
+    assert ok is not None and ok.tau_room_minutes == 300.0
 
 
 # -- Dispatcher wiring --------------------------------------------------------
 
 
-def _trv_info(entity_id: str, preset: MpcV2PlantPreset) -> Trv:
+def _make_trv(entity_id: str, preset: StoredChoice) -> Trv:
     """Build a Trv configured for MPC v2 calibration with a given preset."""
     return Trv(
         entity_id=entity_id,
         current_temperature=19.0,
         valve_max_opening=100.0,
         advanced={
-            "calibration": CalibrationType.DIRECT_VALVE_BASED,
+            "calibration": CalibrationOutput.DIRECT_VALVE_BASED,
             "calibration_mode": CalibrationMode.MPC_V2_CALIBRATION,
             "mpc_v2_plant_preset": preset,
         },
@@ -149,12 +152,12 @@ def _trv_info(entity_id: str, preset: MpcV2PlantPreset) -> Trv:
     )
 
 
-def _make_bt(preset: MpcV2PlantPreset = MpcV2PlantPreset.AUTO) -> Any:
+def _make_bt(preset: StoredChoice = MpcV2PlantPreset.AUTO) -> Any:
     """Build a minimal BT-shaped namespace with a real StateManager."""
     return SimpleNamespace(
-        real_trvs={"climate.x": _trv_info("climate.x", preset)},
-        bt_target_temp=21.0,
-        cur_temp=19.5,
+        real_trvs={"climate.x": _make_trv("climate.x", preset)},
+        heat_target_temperature=21.0,
+        room_temperature=19.5,
         tolerance=0.0,
         window_open=False,
         contact_open=False,
@@ -165,11 +168,14 @@ def _make_bt(preset: MpcV2PlantPreset = MpcV2PlantPreset.AUTO) -> Any:
         bt_hvac_mode=HVACMode.HEAT,
         heating_power=0.04,
         heat_loss_rate=0.02,
-        outdoor_sensor=None,
-        weather_entity=None,
+        outdoor_sensor_entity_id=None,
+        weather_entity_id=None,
         hass=None,
+        unique_id=None,
         state_mgr=_make_manager(),
         clock=FakeClock(monotonic_value=1_000_000.0),
+        schedule_save_state=MagicMock(),
+        is_removed=False,
     )
 
 
@@ -185,10 +191,10 @@ def test_auto_prior_uses_adopted_reid_result() -> None:
     assert out is not None
     live = bt.state_mgr.get_mpc_v2_live(key, MpcV2Params())
     assert live.controller is not None
-    assert live.controller.plant_fine.params.tau_room_min == _REID.tau_room_min
+    assert live.controller.plant_fine.params.tau_room_min == _REID.tau_room_minutes
     assert live.controller.plant_fine.params.gain_heater == _REID.gain_heater
     debug = bt.real_trvs["climate.x"].calibration_balance["debug"]
-    assert debug["reid_tau_room"] == _REID.tau_room_min
+    assert debug["reid_tau_room"] == _REID.tau_room_minutes
 
 
 def test_out_of_band_stored_prior_never_reaches_the_controller() -> None:
@@ -202,7 +208,14 @@ def test_out_of_band_stored_prior_never_reaches_the_controller() -> None:
     mgr = _make_manager()
     raw = _serialize(RuntimeState())
     raw["mpc_v2_reid"] = {
-        "bt:reid": {"tau_room_min": 5e-324, "gain_heater": 3.0, "fitted_ts": 1000.0}
+        "bt:reid": {
+            "tau_room_min": 5e-324,
+            "gain_heater": 3.0,
+            "fitted_ts": 1000.0,
+            "n_segments": 3,
+            "rmse_prior_K": 0.5,
+            "rmse_fit_K": 0.3,
+        }
     }
     mgr._state = _deserialize(json.loads(json.dumps(raw)))
     assert "bt:reid" not in mgr.state.mpc_v2_reid
@@ -242,7 +255,7 @@ def test_dispatch_records_reid_samples_under_auto() -> None:
     runtime = bt.state_mgr.get_mpc_v2_reid_runtime(key)
     assert len(runtime.buffer.samples) == 1
     sample = runtime.buffer.samples[0]
-    assert sample.T_room_C == 19.5
+    assert sample.T_room == 19.5
     assert sample.u_frac == 0.37
     assert sample.window_open is False
 
@@ -258,12 +271,24 @@ def test_dispatch_does_not_identify_from_an_unconfirmed_recommendation() -> None
 def test_dispatch_skips_sampling_when_control_mode_degraded() -> None:
     """Samples are recorded only on the OPTIMAL rung of the fail-soft ladder.
 
-    Under SENSOR_FALLBACK ``cur_temp`` freezes at the last valid reading
+    Under SENSOR_FALLBACK ``room_temperature`` freezes at the last valid reading
     while the valve keeps moving; recording such samples would fit the
     plant against a frozen temperature tail. HOLD has no usable reading
     at all. Both rungs must leave the buffer untouched.
     """
     bt = _make_bt()
+    # The TRV stays reachable and reports its temperature, so SENSOR_FALLBACK
+    # reads its internal temperature.
+    bt.hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=lambda entity_id: (
+                State(entity_id, "heat", {"current_temperature": 19.0})
+                if entity_id == "climate.x"
+                else None
+            )
+        ),
+        config=SimpleNamespace(units=SimpleNamespace(temperature_unit="°C")),
+    )
     bt.real_trvs["climate.x"].last_valve_percent = 37
     out, _ = _compute_mpc_v2_balance(bt, "climate.x")
     assert out is not None
@@ -296,41 +321,39 @@ def test_fallback_episode_gap_splits_reid_segments() -> None:
         extract_segments,
     )
 
-    cfg = ReidConfig()
+    config = ReidConfig()
     spacing = 300.0
     samples: list[ReidSample] = []
     # First heat-up run: 10 samples over 2700 s, rising 1.8 K.
     for i in range(10):
         samples.append(
             ReidSample(
-                t_s=i * spacing, T_room_C=19.0 + 0.2 * i, u_frac=0.8, T_outdoor_C=5.0
+                t_s=i * spacing, T_room=19.0 + 0.2 * i, u_frac=0.8, T_outdoor=5.0
             )
         )
     # Degraded episode: no samples for longer than the gap threshold.
     gap_start = samples[-1].t_s
-    resume = gap_start + cfg.max_gap_s + spacing
+    resume = gap_start + config.max_gap_s + spacing
     # Second heat-up run after recovery.
     for i in range(10):
         samples.append(
             ReidSample(
                 t_s=resume + i * spacing,
-                T_room_C=20.0 + 0.2 * i,
+                T_room=20.0 + 0.2 * i,
                 u_frac=0.8,
-                T_outdoor_C=5.0,
+                T_outdoor=5.0,
             )
         )
 
-    segments = extract_segments(samples, cfg)
+    segments = extract_segments(samples, config)
     assert len(segments) == 2
     assert all(s.kind == "heatup" for s in segments)
     # Without the gap the same samples form one contiguous run.
     contiguous = [
-        ReidSample(
-            t_s=i * spacing, T_room_C=19.0 + 0.1 * i, u_frac=0.8, T_outdoor_C=5.0
-        )
+        ReidSample(t_s=i * spacing, T_room=19.0 + 0.1 * i, u_frac=0.8, T_outdoor=5.0)
         for i in range(20)
     ]
-    assert len(extract_segments(contiguous, cfg)) == 1
+    assert len(extract_segments(contiguous, config)) == 1
 
 
 def test_dispatch_skips_sampling_for_explicit_preset() -> None:
@@ -386,7 +409,7 @@ def test_fit_scheduling_adopts_accepted_outcome(monkeypatch) -> None:
     # mixed time bases would trip the buffer's spacing dedupe.
     runtime.buffer.samples.clear()
     for i in range(300):
-        runtime.buffer.append(ReidSample(t_s=float(i * 300), T_room_C=20.0, u_frac=0.5))
+        runtime.buffer.append(ReidSample(t_s=float(i * 300), T_room=20.0, u_frac=0.5))
     runtime.last_fit_attempt_ts = 0.0
 
     calls: list[int] = []
@@ -395,7 +418,7 @@ def test_fit_scheduling_adopts_accepted_outcome(monkeypatch) -> None:
         calls.append(len(samples))
         return ReidOutcome(
             status="accepted",
-            tau_room_min=_REID.tau_room_min,
+            tau_room_min=_REID.tau_room_minutes,
             gain_heater=_REID.gain_heater,
             rmse_prior_K=0.4,
             rmse_fit_K=0.1,
@@ -409,12 +432,57 @@ def test_fit_scheduling_adopts_accepted_outcome(monkeypatch) -> None:
     assert calls == [len(runtime.buffer.samples)]
     adopted = bt.state_mgr.get_mpc_v2_reid(key)
     assert adopted is not None
-    assert adopted.tau_room_min == _REID.tau_room_min
+    assert adopted.tau_room_minutes == _REID.tau_room_minutes
     assert runtime.fit_inflight is False
+    bt.schedule_save_state.assert_called()
 
     # A second immediate call is throttled by the attempt interval.
     cal._maybe_start_mpc_v2_reid_fit(bt, key, MpcV2Params())
     assert len(calls) == 1
+
+
+def test_accepted_fit_is_stamped_on_the_wall_clock(monkeypatch) -> None:
+    """An accepted fit records when it happened on the wall clock.
+
+    The stamp is persisted and outlives a host reboot, which starts the
+    monotonic clock over; the wall clock continues across it.
+    """
+    from custom_components.better_thermostat import calibration as cal
+    from custom_components.better_thermostat.utils.calibration.mpc_v2 import (
+        ReidOutcome,
+        ReidSample,
+    )
+
+    bt = _make_bt()
+    bt.hass = _FakeHass()
+    bt.real_trvs["climate.x"].last_valve_percent = 50
+    _compute_mpc_v2_balance(bt, "climate.x")
+    key = next(iter(bt.state_mgr._mpc_v2_reid_live))
+    runtime = bt.state_mgr.get_mpc_v2_reid_runtime(key)
+    runtime.buffer.samples.clear()
+    for i in range(300):
+        runtime.buffer.append(ReidSample(t_s=float(i * 300), T_room=20.0, u_frac=0.5))
+    runtime.last_fit_attempt_ts = 0.0
+    monkeypatch.setattr(
+        cal,
+        "run_reid_fit",
+        lambda samples, prior: ReidOutcome(
+            status="accepted",
+            tau_room_min=_REID.tau_room_minutes,
+            gain_heater=_REID.gain_heater,
+            rmse_prior_K=0.4,
+            rmse_fit_K=0.1,
+            n_segments=4,
+            n_samples=300,
+        ),
+    )
+
+    cal._maybe_start_mpc_v2_reid_fit(bt, key, MpcV2Params())
+
+    adopted = bt.state_mgr.get_mpc_v2_reid(key)
+    assert adopted is not None
+    assert adopted.fitted_ts == bt.clock.now().timestamp()
+    assert adopted.fitted_ts != bt.clock.monotonic()
 
 
 # -- Target-independent re-ID keying ------------------------------------------
@@ -428,7 +496,7 @@ def test_reid_buffer_is_shared_across_target_buckets() -> None:
     assert out is not None
 
     bt.clock.advance(120.0)
-    bt.bt_target_temp = 22.5  # different half-degree bucket
+    bt.heat_target_temperature = 22.5  # different half-degree bucket
     out, _ = _compute_mpc_v2_balance(bt, "climate.x")
     assert out is not None
 
@@ -469,7 +537,7 @@ def test_adopt_transfers_all_live_controllers_bumplessly() -> None:
     assert mgr.get_mpc_v2_reid(key_a) is None
 
     new_params = MpcV2Params()
-    new_params.plant.tau_room_min = _REID.tau_room_min
+    new_params.plant.tau_room_min = _REID.tau_room_minutes
     new_params.plant.gain_heater = _REID.gain_heater
     for key, old, last_u in ((key_a, old_a, last_u_a), (key_b, old_b, last_u_b)):
         rebuilt = mgr.get_mpc_v2_live(key, new_params)
@@ -493,7 +561,7 @@ def test_adopt_under_shared_key_removes_legacy_bucket_entries() -> None:
     """
     mgr = _make_manager()
     legacy = MpcV2ReidData(
-        tau_room_min=600.0, gain_heater=1.0, fitted_ts=100.0, n_segments=3
+        tau_room_minutes=600.0, gain_heater=1.0, fitted_ts=100.0, n_segments=3
     )
     mgr.adopt_mpc_v2_reid("uid:climate.x:t21.0", legacy)
     mgr.adopt_mpc_v2_reid("uid:group:t19.0", legacy)
@@ -512,7 +580,7 @@ def test_shared_reid_key_survives_serialization_round_trip() -> None:
     mgr = _make_manager()
     mgr.adopt_mpc_v2_reid("uid:reid", _REID)
     restored = _deserialize(_serialize(mgr.state))
-    assert restored.mpc_v2_reid["uid:reid"].tau_room_min == 240.0
+    assert restored.mpc_v2_reid["uid:reid"].tau_room_minutes == 240.0
 
 
 def test_prior_lookup_falls_back_to_legacy_bucket_keys() -> None:
@@ -525,7 +593,7 @@ def test_prior_lookup_falls_back_to_legacy_bucket_keys() -> None:
     assert out is not None
     live = next(iter(bt.state_mgr._mpc_v2_live.values()))
     assert live.controller is not None
-    assert live.controller.plant_fine.params.tau_room_min == _REID.tau_room_min
+    assert live.controller.plant_fine.params.tau_room_min == _REID.tau_room_minutes
 
 
 def test_prior_lookup_prefers_shared_key_over_bucket_entries() -> None:
@@ -534,7 +602,7 @@ def test_prior_lookup_prefers_shared_key_over_bucket_entries() -> None:
 
     bt = _make_bt()
     legacy = MpcV2ReidData(
-        tau_room_min=600.0, gain_heater=1.0, fitted_ts=2_000_000.0, n_segments=3
+        tau_room_minutes=600.0, gain_heater=1.0, fitted_ts=2_000_000.0, n_segments=3
     )
     bt.state_mgr.adopt_mpc_v2_reid("bt:climate.x:t21.0", legacy)
     bt.state_mgr.adopt_mpc_v2_reid("bt:reid", _REID)
@@ -549,13 +617,210 @@ def test_prior_lookup_picks_freshest_legacy_bucket_entry() -> None:
 
     bt = _make_bt()
     stale = MpcV2ReidData(
-        tau_room_min=600.0, gain_heater=1.0, fitted_ts=100.0, n_segments=3
+        tau_room_minutes=600.0, gain_heater=1.0, fitted_ts=100.0, n_segments=3
     )
     fresh = MpcV2ReidData(
-        tau_room_min=300.0, gain_heater=2.5, fitted_ts=200.0, n_segments=3
+        tau_room_minutes=300.0, gain_heater=2.5, fitted_ts=200.0, n_segments=3
     )
     bt.state_mgr.adopt_mpc_v2_reid("bt:climate.x:t19.0", stale)
     bt.state_mgr.adopt_mpc_v2_reid("bt:climate.x:t21.0", fresh)
 
     found = _lookup_mpc_v2_reid(bt, "bt:reid", "bt:climate.x:t22.0")
     assert found is fresh
+
+
+# -- Preset and compute failures ----------------------------------------------
+
+
+def test_dispatch_reads_an_unknown_stored_preset_as_auto() -> None:
+    """A preset this version does not know runs as AUTO and keeps sampling."""
+    bt = _make_bt(preset="retired_preset")
+    bt.real_trvs["climate.x"].last_valve_percent = 37
+
+    out, _ = _compute_mpc_v2_balance(bt, "climate.x")
+
+    assert out is not None
+    key = next(iter(bt.state_mgr._mpc_v2_reid_live))
+    assert len(bt.state_mgr.get_mpc_v2_reid_runtime(key).buffer.samples) == 1
+
+
+def test_a_failed_compute_publishes_no_valve() -> None:
+    bt = _make_bt()
+
+    with patch(
+        "custom_components.better_thermostat.calibration.compute_mpc_v2",
+        side_effect=ValueError("boom"),
+    ):
+        out, supports_valve = _compute_mpc_v2_balance(bt, "climate.x")
+
+    assert out is None
+    assert supports_valve is False
+    assert bt.real_trvs["climate.x"].calibration_balance is None
+
+
+# -- Fit scheduling failures --------------------------------------------------
+
+
+def _due_fit(bt: Any) -> tuple[str, Any]:
+    """Dispatch once and fill the buffer so a fit is due; return key and runtime."""
+    bt.real_trvs["climate.x"].last_valve_percent = 50
+    _compute_mpc_v2_balance(bt, "climate.x")
+    key = next(iter(bt.state_mgr._mpc_v2_reid_live))
+    runtime = bt.state_mgr.get_mpc_v2_reid_runtime(key)
+    runtime.buffer.samples.clear()
+    for i in range(300):
+        runtime.buffer.append(ReidSample(t_s=float(i * 300), T_room=20.0, u_frac=0.5))
+    runtime.last_fit_attempt_ts = 0.0
+    return key, runtime
+
+
+class _RaisingFuture(_FakeFuture):
+    """Future double whose job raised."""
+
+    @override
+    def result(self) -> object:
+        """Raise what the job raised."""
+        raise RuntimeError("fit crashed")
+
+
+def test_a_fit_already_running_starts_no_second_one(monkeypatch) -> None:
+    from custom_components.better_thermostat import calibration as cal
+
+    bt = _make_bt()
+    bt.hass = _FakeHass()
+    key, runtime = _due_fit(bt)
+    runtime.fit_inflight = True
+    started: list[int] = []
+    monkeypatch.setattr(cal, "run_reid_fit", lambda samples, prior: started.append(1))
+
+    cal._maybe_start_mpc_v2_reid_fit(bt, key, MpcV2Params())
+
+    assert started == []
+    assert runtime.fit_inflight is True
+
+
+def test_a_rejected_fit_leaves_the_prior_alone(monkeypatch) -> None:
+    from custom_components.better_thermostat import calibration as cal
+    from custom_components.better_thermostat.utils.calibration.mpc_v2 import ReidOutcome
+
+    bt = _make_bt()
+    bt.hass = _FakeHass()
+    key, runtime = _due_fit(bt)
+    monkeypatch.setattr(
+        cal,
+        "run_reid_fit",
+        lambda samples, prior: ReidOutcome(
+            status="rejected", n_segments=2, n_samples=300
+        ),
+    )
+
+    cal._maybe_start_mpc_v2_reid_fit(bt, key, MpcV2Params())
+
+    assert bt.state_mgr.get_mpc_v2_reid(key) is None
+    assert runtime.fit_inflight is False
+
+
+class _PendingFuture(_FakeFuture):
+    """Future double that resolves only when the test says so."""
+
+    def __init__(self, result: object) -> None:
+        super().__init__(result)
+        self._callbacks: list[Callable[[_FakeFuture], object]] = []
+
+    @override
+    def add_done_callback(self, cb) -> None:
+        """Hold the callback until :meth:`resolve`."""
+        self._callbacks.append(cb)
+
+    def resolve(self) -> None:
+        """Run the held callbacks, as the loop does once the job returns."""
+        for cb in self._callbacks:
+            cb(self)
+
+
+def test_a_fit_finishing_after_the_removal_is_not_adopted(monkeypatch) -> None:
+    """A thermostat removed while its fit runs adopts and saves nothing.
+
+    The fit runs in the executor, where the removal cannot stop it. Its
+    result belongs to a thermostat whose final save is already written.
+    """
+    from custom_components.better_thermostat import calibration as cal
+    from custom_components.better_thermostat.utils.calibration.mpc_v2 import ReidOutcome
+
+    outcome = ReidOutcome(
+        status="accepted",
+        tau_room_min=_REID.tau_room_minutes,
+        gain_heater=_REID.gain_heater,
+        rmse_prior_K=0.4,
+        rmse_fit_K=0.1,
+        n_segments=4,
+        n_samples=300,
+    )
+    pending = _PendingFuture(outcome)
+    bt = _make_bt()
+    bt.hass = SimpleNamespace(async_add_executor_job=lambda func, *args: pending)
+    key, runtime = _due_fit(bt)
+    bt.schedule_save_state.reset_mock()
+
+    cal._maybe_start_mpc_v2_reid_fit(bt, key, MpcV2Params())
+    bt.is_removed = True
+    pending.resolve()
+
+    assert bt.state_mgr.get_mpc_v2_reid(key) is None
+    bt.schedule_save_state.assert_not_called()
+    assert runtime.fit_inflight is False
+
+
+def test_a_fit_that_crashes_frees_the_next_attempt(caplog) -> None:
+    """A crashed fit is reported and does not block every later one."""
+    from custom_components.better_thermostat import calibration as cal
+
+    bt = _make_bt()
+    bt.hass = SimpleNamespace(
+        async_add_executor_job=lambda func, *args: _RaisingFuture(None)
+    )
+    key, runtime = _due_fit(bt)
+
+    cal._maybe_start_mpc_v2_reid_fit(bt, key, MpcV2Params())
+
+    assert runtime.fit_inflight is False
+    assert bt.state_mgr.get_mpc_v2_reid(key) is None
+    assert "re-identification failed" in caplog.text
+
+
+def test_a_fit_that_cannot_be_scheduled_frees_the_next_attempt(caplog) -> None:
+    from custom_components.better_thermostat import calibration as cal
+
+    def _refuse(func, *args):
+        raise RuntimeError("executor shut down")
+
+    bt = _make_bt()
+    bt.hass = SimpleNamespace(async_add_executor_job=_refuse)
+    key, runtime = _due_fit(bt)
+
+    cal._maybe_start_mpc_v2_reid_fit(bt, key, MpcV2Params())
+
+    assert runtime.fit_inflight is False
+    assert "could not schedule MPC v2 re-identification" in caplog.text
+
+
+# -- Missing state store ------------------------------------------------------
+
+
+def test_reid_helpers_without_a_state_store_do_nothing() -> None:
+    """Every re-ID helper is a no-op until the state store exists."""
+    from custom_components.better_thermostat import calibration as cal
+
+    bt = _make_bt()
+    bt.hass = _FakeHass()
+    bt.state_mgr = None
+
+    assert cal._lookup_mpc_v2_reid(bt, "bt:reid", "bt:climate.x:t21.0") is None
+    cal._record_mpc_v2_reid_sample(
+        bt,
+        "bt:reid",
+        applied_valve_percent=40.0,
+        trv_temperature=21.0,
+        outdoor_temperature=5.0,
+    )
+    cal._maybe_start_mpc_v2_reid_fit(bt, "bt:reid", MpcV2Params())
