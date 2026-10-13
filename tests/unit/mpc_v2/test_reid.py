@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import math
 
 from custom_components.better_thermostat.utils.calibration.mpc_v2.reid import (
@@ -98,6 +99,18 @@ def test_extracts_heatup_and_cooldown() -> None:
     segments = extract_segments(samples, ReidConfig())
     kinds = [s.kind for s in segments]
     assert kinds == ["heatup", "cooldown"]
+
+
+def test_reid_simulation_uses_measured_supply() -> None:
+    """A lower measured supply reduces predicted heating for the same valve."""
+    samples = [_sample(0.0, 20.0, 0.5), _sample(300.0, 20.0, 0.5)]
+    nominal = _simulate_room(PlantParams(), Segment("heatup", samples), 30.0)
+    measured = _simulate_room(
+        PlantParams(),
+        Segment("heatup", [replace(samples[0], T_water=33.0), samples[1]]),
+        30.0,
+    )
+    assert measured[-1] < nominal[-1]
 
 
 def test_window_open_cuts_a_segment() -> None:

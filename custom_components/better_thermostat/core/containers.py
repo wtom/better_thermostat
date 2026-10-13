@@ -37,6 +37,8 @@ class BtConfig:
     door_close_delay_seconds: float = 0.0
     weather_entity_id: str | None = None
     outdoor_sensor_entity_id: str | None = None
+    mpc_v2_supply_sensor_entity_id: str | None = None
+    mpc_v2_dhw_sensor_entity_id: str | None = None
     off_temperature: float | None = None
     tolerance: float = 0.0
 

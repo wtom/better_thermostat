@@ -23,7 +23,9 @@
           "target_temp_min": "Sollminimumtemperatur",
           "target_temp_max": "Sollmaximumtemperatur",
           "target_temp_step": "Solltemperatur-Schritt",
-          "presets": "Aktivierte Presets"
+          "presets": "Aktivierte Presets",
+          "mpc_v2_supply_sensor": "MPC v2 Heizkreis-Vorlauf",
+          "mpc_v2_dhw_sensor": "MPC v2 Warmwasser-Sperrsignal"
         },
         "data_description": {
           "name": "Der Name dieses Thermostats und seines Geräts in Home Assistant.",
@@ -44,7 +46,9 @@
           "target_temp_min": "Das niedrigste Ziel, das du einstellen kannst. Auto übernimmt den Bereich, den deine Geräte melden.",
           "target_temp_max": "Das höchste Ziel, das du einstellen kannst. Auto übernimmt den Bereich, den deine Geräte melden.",
           "target_temp_step": "Um wie viel sich das Ziel pro Schritt ändert. Auto übernimmt den gröbsten Schritt, den deine Thermostate melden.",
-          "presets": "Wähle die Presets aus, die für dieses Thermostat verfügbar sein sollen."
+          "presets": "Wähle die Presets aus, die für dieses Thermostat verfügbar sein sollen.",
+          "mpc_v2_supply_sensor": "Optional für MPC v2: Gemessene Heizkreis-Vorlauftemperatur. Während der Warmwasserladung wird dieser Wert nicht verwendet.",
+          "mpc_v2_dhw_sensor": "Optional für MPC v2: Speicherladepumpe oder WW-Umschaltsignal. 1/ein bedeutet, dass kein Heizwasser zu den Heizkörpern fließt."
         }
       },
       "advanced": {
@@ -120,7 +124,9 @@
           "target_temp_max": "Sollmaximumtemperatur",
           "target_temp_step": "Solltemperatur-Schritt",
           "presets": "Aktivierte Presets",
-          "cooler": "Klimagerät AC (optional)"
+          "cooler": "Klimagerät AC (optional)",
+          "mpc_v2_supply_sensor": "MPC v2 Heizkreis-Vorlauf",
+          "mpc_v2_dhw_sensor": "MPC v2 Warmwasser-Sperrsignal"
         },
         "data_description": {
           "name": "Der Name dieses Thermostats und seines Geräts in Home Assistant.",
@@ -141,7 +147,9 @@
           "target_temp_max": "Das höchste Ziel, das du einstellen kannst. Auto übernimmt den Bereich, den deine Geräte melden.",
           "target_temp_step": "Um wie viel sich das Ziel pro Schritt ändert. Auto übernimmt den gröbsten Schritt, den deine Thermostate melden.",
           "presets": "Wähle die Presets aus, die für dieses Thermostat verfügbar sein sollen.",
-          "cooler": "Optional. Eine Klimaanlage oder eine andere Klima-Entität, die diesen Raum zusätzlich zu den Thermostaten kühlt."
+          "cooler": "Optional. Eine Klimaanlage oder eine andere Klima-Entität, die diesen Raum zusätzlich zu den Thermostaten kühlt.",
+          "mpc_v2_supply_sensor": "Optional für MPC v2: Gemessene Heizkreis-Vorlauftemperatur. Während der Warmwasserladung wird dieser Wert nicht verwendet.",
+          "mpc_v2_dhw_sensor": "Optional für MPC v2: Speicherladepumpe oder WW-Umschaltsignal. 1/ein bedeutet, dass kein Heizwasser zu den Heizkörpern fließt."
         }
       },
       "advanced": {

@@ -11,7 +11,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from homeassistant.components.climate.const import HVACMode
 from homeassistant.core import State
 
-from custom_components.better_thermostat.calibration import _compute_mpc_v2_balance
+from custom_components.better_thermostat.calibration import (
+    _build_mpc_v2_reid_key,
+    _compute_mpc_v2_balance,
+    _get_mpc_v2_supply_temperature,
+    _mpc_v2_heating_flow_available,
+)
 from custom_components.better_thermostat.core.clock import FakeClock
 from custom_components.better_thermostat.core.fsm.control_mode import ControlMode
 from custom_components.better_thermostat.trv import Trv
@@ -155,6 +160,8 @@ def _make_trv(entity_id: str, preset: StoredChoice) -> Trv:
 def _make_bt(preset: StoredChoice = MpcV2PlantPreset.AUTO) -> Any:
     """Build a minimal BT-shaped namespace with a real StateManager."""
     return SimpleNamespace(
+        mpc_v2_supply_sensor_entity_id=None,
+        mpc_v2_dhw_sensor_entity_id=None,
         real_trvs={"climate.x": _make_trv("climate.x", preset)},
         heat_target_temperature=21.0,
         room_temperature=19.5,
@@ -177,6 +184,56 @@ def _make_bt(preset: StoredChoice = MpcV2PlantPreset.AUTO) -> Any:
         schedule_save_state=MagicMock(),
         is_removed=False,
     )
+
+
+def test_measured_supply_is_blocked_during_dhw() -> None:
+    """The storage pump masks boiler supply readings from the heating model."""
+    bt = _make_bt()
+    bt.mpc_v2_supply_sensor_entity_id = "sensor.heizung_vorlauf"
+    bt.mpc_v2_dhw_sensor_entity_id = "sensor.heizung_pumpe_status_speicher"
+    readings = {
+        bt.mpc_v2_supply_sensor_entity_id: State(
+            bt.mpc_v2_supply_sensor_entity_id, "35.0", {"unit_of_measurement": "°C"}
+        ),
+        bt.mpc_v2_dhw_sensor_entity_id: State(bt.mpc_v2_dhw_sensor_entity_id, "1.0"),
+    }
+    bt.hass = SimpleNamespace(states=SimpleNamespace(get=readings.get))
+    assert _mpc_v2_heating_flow_available(bt) is False
+    out, _ = _compute_mpc_v2_balance(bt, "climate.x")
+    assert out is None  # No earlier plan exists when startup begins during DHW.
+    assert bt.state_mgr.state.mpc_v2_reid == {}
+
+    readings[bt.mpc_v2_dhw_sensor_entity_id] = State(
+        bt.mpc_v2_dhw_sensor_entity_id, "0.0"
+    )
+    assert _mpc_v2_heating_flow_available(bt) is True
+    assert _get_mpc_v2_supply_temperature(bt) == 35.0
+    out, _ = _compute_mpc_v2_balance(bt, "climate.x")
+    assert out is not None
+    controller = next(iter(bt.state_mgr._mpc_v2_live.values())).controller
+    assert controller is not None
+    assert controller.plant_fine.params.T_water == 35.0
+
+
+def test_measured_supply_does_not_reuse_fixed_reference_fit() -> None:
+    """Switching to a measured supply starts with a separate model prior."""
+    bt = _make_bt()
+    old_key = _build_mpc_v2_reid_key(bt)
+    bt.state_mgr.adopt_mpc_v2_reid(old_key, _REID)
+    bt.mpc_v2_supply_sensor_entity_id = "sensor.heizung_vorlauf"
+    bt.hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=lambda _entity_id: State(
+                "sensor.heizung_vorlauf", "35", {"unit_of_measurement": "°C"}
+            )
+        )
+    )
+    out, _ = _compute_mpc_v2_balance(bt, "climate.x")
+    assert out is not None
+    assert _build_mpc_v2_reid_key(bt) != old_key
+    controller = next(iter(bt.state_mgr._mpc_v2_live.values())).controller
+    assert controller is not None
+    assert controller.plant_fine.params.gain_heater != _REID.gain_heater
 
 
 def test_auto_prior_uses_adopted_reid_result() -> None:

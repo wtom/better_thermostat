@@ -50,7 +50,9 @@ from .const import (
     CONF_HUMIDITY_SENSOR,
     CONF_INTEGRATION,
     CONF_MODEL,
+    CONF_MPC_V2_DHW_SENSOR,
     CONF_MPC_V2_PLANT_PRESET,
+    CONF_MPC_V2_SUPPLY_SENSOR,
     CONF_NO_OFF_SYSTEM_MODE,
     CONF_OFF_TEMPERATURE,
     CONF_OUTDOOR_SENSOR,
@@ -124,6 +126,8 @@ BtSettings = TypedDict(  # noqa: UP013
         "window_sensors": NotRequired[str | None],
         "door_sensors": NotRequired[str | None],
         "outdoor_sensor": NotRequired[str | None],
+        "mpc_v2_supply_sensor": NotRequired[str | None],
+        "mpc_v2_dhw_sensor": NotRequired[str | None],
         "weather": NotRequired[str | None],
         "window_off_delay": NotRequired[str | float | None],
         "window_off_delay_after": NotRequired[str | float | None],
@@ -146,6 +150,8 @@ type _TextKey = Literal[
     "window_sensors",
     "door_sensors",
     "outdoor_sensor",
+    "mpc_v2_supply_sensor",
+    "mpc_v2_dhw_sensor",
     "weather",
 ]
 type _NumberOrTextKey = Literal[
@@ -179,6 +185,8 @@ _TEXT_KEYS: Final[tuple[_TextKey, ...]] = (
     CONF_WINDOW_SENSORS,
     CONF_DOOR_SENSORS,
     CONF_OUTDOOR_SENSOR,
+    CONF_MPC_V2_SUPPLY_SENSOR,
+    CONF_MPC_V2_DHW_SENSOR,
     CONF_WEATHER,
 )
 _NUMBER_OR_TEXT_KEYS: Final[tuple[_NumberOrTextKey, ...]] = (

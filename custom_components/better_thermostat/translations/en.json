@@ -23,7 +23,9 @@
           "target_temp_min": "Target minimum temperature",
           "target_temp_max": "Target maximum temperature",
           "target_temp_step": "Target temperature step",
-          "presets": "Enabled Presets"
+          "presets": "Enabled Presets",
+          "mpc_v2_supply_sensor": "MPC v2 heating supply temperature",
+          "mpc_v2_dhw_sensor": "MPC v2 DHW diversion sensor"
         },
         "data_description": {
           "name": "The name of this thermostat and its device in Home Assistant.",
@@ -44,7 +46,9 @@
           "target_temp_min": "The lowest target you can set. Auto takes the range your devices report.",
           "target_temp_max": "The highest target you can set. Auto takes the range your devices report.",
           "target_temp_step": "How far the target moves per step. Auto takes the coarsest step your thermostats report.",
-          "presets": "Select the presets you want to be available for this thermostat."
+          "presets": "Select the presets you want to be available for this thermostat.",
+          "mpc_v2_supply_sensor": "Optional for MPC v2: measured heating-circuit supply temperature. Ignored while the DHW diversion sensor is active.",
+          "mpc_v2_dhw_sensor": "Optional for MPC v2: storage-charge pump or DHW diversion signal. On/1 means heating flow to radiators is interrupted."
         }
       },
       "advanced": {
@@ -120,7 +124,9 @@
           "target_temp_max": "Target maximum temperature",
           "target_temp_step": "Target temperature step",
           "presets": "Enabled Presets",
-          "cooler": "The cooling device (optional)"
+          "cooler": "The cooling device (optional)",
+          "mpc_v2_supply_sensor": "MPC v2 heating supply temperature",
+          "mpc_v2_dhw_sensor": "MPC v2 DHW diversion sensor"
         },
         "data_description": {
           "name": "The name of this thermostat and its device in Home Assistant.",
@@ -141,7 +147,9 @@
           "target_temp_max": "The highest target you can set. Auto takes the range your devices report.",
           "target_temp_step": "How far the target moves per step. Auto takes the coarsest step your thermostats report.",
           "presets": "Select the presets you want to be available for this thermostat.",
-          "cooler": "Optional. An air conditioner or another climate entity that cools this room alongside the thermostats."
+          "cooler": "Optional. An air conditioner or another climate entity that cools this room alongside the thermostats.",
+          "mpc_v2_supply_sensor": "Optional for MPC v2: measured heating-circuit supply temperature. Ignored while the DHW diversion sensor is active.",
+          "mpc_v2_dhw_sensor": "Optional for MPC v2: storage-charge pump or DHW diversion signal. On/1 means heating flow to radiators is interrupted."
         }
       },
       "advanced": {

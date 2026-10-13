@@ -23,7 +23,9 @@
           "target_temp_min": "Mål minimum temperatur",
           "target_temp_max": "Mål maksimum temperatur",
           "target_temp_step": "Trin for måltemperatur",
-          "presets": "Aktiverede forudindstillinger"
+          "presets": "Aktiverede forudindstillinger",
+          "mpc_v2_supply_sensor": "MPC v2 fremløbstemperatur",
+          "mpc_v2_dhw_sensor": "MPC v2 varmtvandsomskiftning"
         },
         "data_description": {
           "name": "Navnet på denne termostat og dens enhed i Home Assistant.",
@@ -44,7 +46,9 @@
           "target_temp_min": "Det laveste mål, du kan indstille. Auto bruger det område, dine enheder melder.",
           "target_temp_max": "Det højeste mål, du kan indstille. Auto bruger det område, dine enheder melder.",
           "target_temp_step": "Hvor meget målet ændres pr. trin. Auto bruger det groveste trin, dine termostater melder.",
-          "presets": "Vælg de forudindstillinger, der skal være tilgængelige for denne termostat."
+          "presets": "Vælg de forudindstillinger, der skal være tilgængelige for denne termostat.",
+          "mpc_v2_supply_sensor": "Valgfri for MPC v2: Målt fremløbstemperatur til radiatorerne. Værdien ignoreres under opvarmning af brugsvand.",
+          "mpc_v2_dhw_sensor": "Valgfri for MPC v2: Føler for varmtvandsladning. Til/1 betyder, at strømmen til radiatorerne er afbrudt."
         }
       },
       "advanced": {
@@ -120,7 +124,9 @@
           "target_temp_max": "Mål maksimum temperatur",
           "target_temp_step": "Trin for måltemperatur",
           "presets": "Aktiverede forudindstillinger",
-          "cooler": "Køleenhed (valgfri)"
+          "cooler": "Køleenhed (valgfri)",
+          "mpc_v2_supply_sensor": "MPC v2 fremløbstemperatur",
+          "mpc_v2_dhw_sensor": "MPC v2 varmtvandsomskiftning"
         },
         "data_description": {
           "name": "Navnet på denne termostat og dens enhed i Home Assistant.",
@@ -141,7 +147,9 @@
           "target_temp_max": "Det højeste mål, du kan indstille. Auto bruger det område, dine enheder melder.",
           "target_temp_step": "Hvor meget målet ændres pr. trin. Auto bruger det groveste trin, dine termostater melder.",
           "presets": "Vælg de forudindstillinger, der skal være tilgængelige for denne termostat.",
-          "cooler": "Valgfri. Et klimaanlæg eller en anden klimaenhed, der køler rummet sammen med termostaterne."
+          "cooler": "Valgfri. Et klimaanlæg eller en anden klimaenhed, der køler rummet sammen med termostaterne.",
+          "mpc_v2_supply_sensor": "Valgfri for MPC v2: Målt fremløbstemperatur til radiatorerne. Værdien ignoreres under opvarmning af brugsvand.",
+          "mpc_v2_dhw_sensor": "Valgfri for MPC v2: Føler for varmtvandsladning. Til/1 betyder, at strømmen til radiatorerne er afbrudt."
         }
       },
       "advanced": {

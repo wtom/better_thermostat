@@ -17,6 +17,8 @@ from custom_components.better_thermostat.utils.const import (
     CONF_DOOR_OFF_DELAY,
     CONF_DOOR_OFF_DELAY_AFTER,
     CONF_DOOR_SENSORS,
+    CONF_MPC_V2_DHW_SENSOR,
+    CONF_MPC_V2_SUPPLY_SENSOR,
     CONF_TEMPERATURE_SENSOR,
     CONF_THERMOSTAT,
 )
@@ -110,6 +112,32 @@ def test_door_sensor_removed_when_key_absent_from_input():
     }
     normalized = _normalize_user_submission(user_input, mode="options", base=base)
     assert normalized[CONF_DOOR_SENSORS] is None
+
+
+def test_mpc_v2_optional_sensors_can_be_set_and_cleared():
+    """Options must not retain old supply or DHW sensors after removal."""
+    submitted = {
+        CONF_NAME: "Living Room",
+        CONF_THERMOSTAT: ["climate.trv"],
+        CONF_TEMPERATURE_SENSOR: "sensor.temp",
+        CONF_MPC_V2_SUPPLY_SENSOR: "sensor.heating_supply",
+        CONF_MPC_V2_DHW_SENSOR: "sensor.dhw_pump",
+    }
+    selected = _normalize_user_submission(submitted, mode="options")
+    assert selected[CONF_MPC_V2_SUPPLY_SENSOR] == "sensor.heating_supply"
+    assert selected[CONF_MPC_V2_DHW_SENSOR] == "sensor.dhw_pump"
+
+    cleared = _normalize_user_submission(
+        {
+            CONF_NAME: "Living Room",
+            CONF_THERMOSTAT: ["climate.trv"],
+            CONF_TEMPERATURE_SENSOR: "sensor.temp",
+        },
+        mode="options",
+        base=selected,
+    )
+    assert cleared[CONF_MPC_V2_SUPPLY_SENSOR] is None
+    assert cleared[CONF_MPC_V2_DHW_SENSOR] is None
 
 
 def test_door_timeouts_normalized_from_duration_dicts():

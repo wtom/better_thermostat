@@ -323,6 +323,10 @@ def get_optional_sensors(self: BetterThermostat) -> list[str]:
         optional.append(self.humidity_sensor_entity_id)
     if self.outdoor_sensor_entity_id:
         optional.append(self.outdoor_sensor_entity_id)
+    if self.mpc_v2_supply_sensor_entity_id:
+        optional.append(self.mpc_v2_supply_sensor_entity_id)
+    if self.mpc_v2_dhw_sensor_entity_id:
+        optional.append(self.mpc_v2_dhw_sensor_entity_id)
     if self.weather_entity_id:
         optional.append(self.weather_entity_id)
     # An actuator rather than a sensor, watched on the same terms because

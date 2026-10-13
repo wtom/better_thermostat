@@ -160,6 +160,8 @@ from .utils.const import (
     CONF_DOOR_SENSORS,
     CONF_HUMIDITY_SENSOR,
     CONF_MODEL,
+    CONF_MPC_V2_DHW_SENSOR,
+    CONF_MPC_V2_SUPPLY_SENSOR,
     CONF_OFF_TEMPERATURE,
     CONF_OUTDOOR_SENSOR,
     CONF_PRESETS,
@@ -386,6 +388,8 @@ async def async_setup_entry(
         entry.entry_id,
         device_class="better_thermostat",
         state_class="better_thermostat_state",
+        mpc_v2_supply_sensor_entity_id=settings.get(CONF_MPC_V2_SUPPLY_SENSOR),
+        mpc_v2_dhw_sensor_entity_id=settings.get(CONF_MPC_V2_DHW_SENSOR),
     )
     entry.runtime_data.climate = bt_entity
     async_normalize_bt_entity_ids(hass, entry, Platform.CLIMATE)
@@ -721,6 +725,16 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         return self.config.outdoor_sensor_entity_id
 
     @property
+    def mpc_v2_supply_sensor_entity_id(self) -> str | None:
+        """Return the optional measured heating-supply sensor."""
+        return self.config.mpc_v2_supply_sensor_entity_id
+
+    @property
+    def mpc_v2_dhw_sensor_entity_id(self) -> str | None:
+        """Return the optional DHW diversion sensor."""
+        return self.config.mpc_v2_dhw_sensor_entity_id
+
+    @property
     def off_temperature(self) -> float | None:
         """Return the outdoor threshold temperature."""
         return self.config.off_temperature
@@ -947,6 +961,8 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         unique_id: str,
         device_class: str | None,
         state_class: str | None,
+        mpc_v2_supply_sensor_entity_id: str | None = None,
+        mpc_v2_dhw_sensor_entity_id: str | None = None,
     ) -> None:
         """Initialize the thermostat.
 
@@ -1002,6 +1018,10 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
             Device class of the climate entity.
         state_class : str | None
             State class of the climate entity.
+        mpc_v2_supply_sensor_entity_id : str | None
+            Optional measured heating-circuit supply temperature sensor.
+        mpc_v2_dhw_sensor_entity_id : str | None
+            Optional signal that heating flow is diverted to DHW.
         """
         self.real_trvs: dict[str, Trv] = {}
         self.entity_ids = []
@@ -1085,6 +1105,8 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
             ),
             weather_entity_id=weather_entity_id or None,
             outdoor_sensor_entity_id=outdoor_sensor_entity_id or None,
+            mpc_v2_supply_sensor_entity_id=mpc_v2_supply_sensor_entity_id or None,
+            mpc_v2_dhw_sensor_entity_id=mpc_v2_dhw_sensor_entity_id or None,
             off_temperature=_off_temperature,
             tolerance=_tolerance,
         )
@@ -3146,6 +3168,10 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
             self.all_entities.append(self.cooler_entity_id)
         if self.outdoor_sensor_entity_id is not None:
             self.all_entities.append(self.outdoor_sensor_entity_id)
+        if self.mpc_v2_supply_sensor_entity_id is not None:
+            self.all_entities.append(self.mpc_v2_supply_sensor_entity_id)
+        if self.mpc_v2_dhw_sensor_entity_id is not None:
+            self.all_entities.append(self.mpc_v2_dhw_sensor_entity_id)
 
         # try to find battery entities for all related entities
         for entity in self.all_entities:
@@ -3429,6 +3455,16 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
                     self._trigger_outdoor_change,
                 )
             )
+        for supply_entity_id in (
+            self.mpc_v2_supply_sensor_entity_id,
+            self.mpc_v2_dhw_sensor_entity_id,
+        ):
+            if supply_entity_id is not None:
+                self.async_on_remove(
+                    async_track_state_change_event(
+                        self.hass, [supply_entity_id], self._trigger_outdoor_change
+                    )
+                )
         # One keepalive right away, so a TRV that mirrors the room temperature
         # has it before the first interval elapses.
         try:
