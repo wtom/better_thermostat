@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import math
 
 from custom_components.better_thermostat.utils.calibration.mpc_v2.reid import (
@@ -51,6 +52,17 @@ def test_buffer_dedupes_samples_closer_than_spacing() -> None:
     assert len(buf.samples) == 2
 
 
+def test_diversion_marker_cuts_a_segment_even_inside_spacing() -> None:
+    """A short DHW switch must not bridge two heating observations."""
+    buf = ReidBuffer(min_spacing_s=60.0)
+    assert buf.append(_sample(1000.0, 20.0, 0.8))
+    assert buf.append(_sample(1001.0, 20.0, 0.0, window=True))
+    assert not buf.append(_sample(1002.0, 20.0, 0.0, window=True))
+    assert not buf.append(_sample(1003.0, 20.0, 0.8))
+    assert buf.append(_sample(1062.0, 20.1, 0.8))
+    assert [sample.window_open for sample in buf.samples] == [False, True, False]
+
+
 def test_buffer_evicts_oldest_beyond_maxlen() -> None:
     """The buffer stays bounded and keeps the most recent samples."""
     buf = ReidBuffer(maxlen=5, min_spacing_s=1.0)
@@ -98,6 +110,18 @@ def test_extracts_heatup_and_cooldown() -> None:
     segments = extract_segments(samples, ReidConfig())
     kinds = [s.kind for s in segments]
     assert kinds == ["heatup", "cooldown"]
+
+
+def test_reid_simulation_uses_measured_supply() -> None:
+    """A lower measured supply reduces predicted heating for the same valve."""
+    samples = [_sample(0.0, 20.0, 0.5), _sample(300.0, 20.0, 0.5)]
+    nominal = _simulate_room(PlantParams(), Segment("heatup", samples), 30.0)
+    measured = _simulate_room(
+        PlantParams(),
+        Segment("heatup", [replace(samples[0], T_water=33.0), samples[1]]),
+        30.0,
+    )
+    assert measured[-1] < nominal[-1]
 
 
 def test_window_open_cuts_a_segment() -> None:

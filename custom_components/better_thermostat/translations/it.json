@@ -23,7 +23,9 @@
           "target_temp_min": "Temperatura target minima",
           "target_temp_max": "Temperatura target massima",
           "target_temp_step": "Passo della temperatura target",
-          "presets": "Preset abilitati"
+          "presets": "Preset abilitati",
+          "mpc_v2_supply_sensor": "MPC v2 temperatura di mandata",
+          "mpc_v2_dhw_sensor": "MPC v2 deviazione acqua calda"
         },
         "data_description": {
           "name": "Il nome di questo termostato e del suo dispositivo in Home Assistant.",
@@ -44,7 +46,9 @@
           "target_temp_min": "L'obiettivo più basso impostabile. Auto usa l'intervallo indicato dai tuoi dispositivi.",
           "target_temp_max": "L'obiettivo più alto impostabile. Auto usa l'intervallo indicato dai tuoi dispositivi.",
           "target_temp_step": "Di quanto cambia l'obiettivo a ogni passo. Auto usa il passo più grossolano dei tuoi termostati.",
-          "presets": "Seleziona i preset che vuoi rendere disponibili per questo termostato."
+          "presets": "Seleziona i preset che vuoi rendere disponibili per questo termostato.",
+          "mpc_v2_supply_sensor": "Facoltativo per MPC v2: temperatura misurata della mandata del riscaldamento. Ignorata durante la produzione di acqua calda.",
+          "mpc_v2_dhw_sensor": "Facoltativo per MPC v2: sensore di carica dell’acqua calda. Attivo/1 significa che il flusso ai radiatori è interrotto."
         }
       },
       "advanced": {
@@ -120,7 +124,9 @@
           "target_temp_max": "Temperatura target massima",
           "target_temp_step": "Passo della temperatura target",
           "presets": "Preset abilitati",
-          "cooler": "Il dispositivo di raffreddamento (opzionale)"
+          "cooler": "Il dispositivo di raffreddamento (opzionale)",
+          "mpc_v2_supply_sensor": "MPC v2 temperatura di mandata",
+          "mpc_v2_dhw_sensor": "MPC v2 deviazione acqua calda"
         },
         "data_description": {
           "name": "Il nome di questo termostato e del suo dispositivo in Home Assistant.",
@@ -141,7 +147,9 @@
           "target_temp_max": "L'obiettivo più alto impostabile. Auto usa l'intervallo indicato dai tuoi dispositivi.",
           "target_temp_step": "Di quanto cambia l'obiettivo a ogni passo. Auto usa il passo più grossolano dei tuoi termostati.",
           "presets": "Seleziona i preset che vuoi rendere disponibili per questo termostato.",
-          "cooler": "Facoltativo. Un condizionatore o un'altra entità clima che raffredda questa stanza insieme ai termostati."
+          "cooler": "Facoltativo. Un condizionatore o un'altra entità clima che raffredda questa stanza insieme ai termostati.",
+          "mpc_v2_supply_sensor": "Facoltativo per MPC v2: temperatura misurata della mandata del riscaldamento. Ignorata durante la produzione di acqua calda.",
+          "mpc_v2_dhw_sensor": "Facoltativo per MPC v2: sensore di carica dell’acqua calda. Attivo/1 significa che il flusso ai radiatori è interrotto."
         }
       },
       "advanced": {

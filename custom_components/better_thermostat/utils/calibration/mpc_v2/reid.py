@@ -43,6 +43,7 @@ class ReidSample:
     u_frac: float
     T_outdoor: float | None = None
     T_trv: float | None = None
+    T_water: float | None = None
     window_open: bool = False
 
 
@@ -65,11 +66,18 @@ class ReidBuffer:
         for value in (sample.t_s, sample.T_room, sample.u_frac):
             if not math.isfinite(value):
                 return False
-        for optional in (sample.T_outdoor, sample.T_trv):
+        for optional in (sample.T_outdoor, sample.T_trv, sample.T_water):
             if optional is not None and not math.isfinite(optional):
                 return False
-        if self.samples and sample.t_s - self.samples[-1].t_s < self.min_spacing_s:
-            return False
+        if self.samples:
+            previous = self.samples[-1]
+            if sample.window_open and previous.window_open:
+                return False
+            if (
+                not sample.window_open
+                and sample.t_s - previous.t_s < self.min_spacing_s
+            ):
+                return False
         self.samples.append(sample)
         if len(self.samples) > self.maxlen:
             del self.samples[: len(self.samples) - self.maxlen]
@@ -200,9 +208,10 @@ def _simulate_room(
         h_min = (dt_s / n_sub) / 60.0
         u = max(0.0, min(1.0, prev.u_frac))
         T_outdoor = prev.T_outdoor if prev.T_outdoor is not None else T_room
+        T_water = prev.T_water if prev.T_water is not None else params.T_water
         for _ in range(n_sub):
             dT_rad = (
-                params.gain_heater * u * (params.T_water - T_rad) - (T_rad - T_room)
+                params.gain_heater * u * (T_water - T_rad) - (T_rad - T_room)
             ) / params.tau_rad_min
             dT_room = (
                 params.coupling_rad_room * (T_rad - T_room) - (T_room - T_outdoor)

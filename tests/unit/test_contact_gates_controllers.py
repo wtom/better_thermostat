@@ -122,6 +122,8 @@ def _bt(real_trvs: dict[str, Trv], *, window_open: bool, door_open: bool) -> Any
         heating_power=0.04,
         heat_loss_rate=0.02,
         outdoor_sensor_entity_id=None,
+        mpc_v2_supply_sensor_entity_id=None,
+        mpc_v2_dhw_sensor_entity_id=None,
         weather_entity_id=None,
         hass=None,
         unique_id="bt_contact_gate",

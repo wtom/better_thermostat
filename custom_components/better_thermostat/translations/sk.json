@@ -23,7 +23,9 @@
           "target_temp_min": "Minimálna cieľová teplota",
           "target_temp_max": "Maximálna cieľová teplota",
           "target_temp_step": "Krok cieľovej teploty",
-          "presets": "Povolené predvoľby"
+          "presets": "Povolené predvoľby",
+          "mpc_v2_supply_sensor": "MPC v2 teplota prívodu",
+          "mpc_v2_dhw_sensor": "MPC v2 prepnutie teplej vody"
         },
         "data_description": {
           "name": "Názov tohto termostatu a jeho zariadenia v Home Assistant.",
@@ -44,7 +46,9 @@
           "target_temp_min": "Najnižší cieľ, ktorý môžete nastaviť. Auto preberá rozsah, ktorý hlásia zariadenia.",
           "target_temp_max": "Najvyšší cieľ, ktorý môžete nastaviť. Auto preberá rozsah, ktorý hlásia zariadenia.",
           "target_temp_step": "O koľko sa cieľ zmení za jeden krok. Auto preberá najhrubší krok, ktorý hlásia termostaty.",
-          "presets": "Vyberte predvoľby, ktoré chcete mať k dispozícii pre tento termostat."
+          "presets": "Vyberte predvoľby, ktoré chcete mať k dispozícii pre tento termostat.",
+          "mpc_v2_supply_sensor": "Voliteľné pre MPC v2: meraná teplota prívodu vykurovania. Počas ohrevu teplej vody sa ignoruje.",
+          "mpc_v2_dhw_sensor": "Voliteľné pre MPC v2: snímač nabíjania zásobníka. Zapnuté/1 znamená prerušený prietok do radiátorov."
         }
       },
       "advanced": {
@@ -120,7 +124,9 @@
           "target_temp_max": "Maximálna cieľová teplota",
           "target_temp_step": "Krok cieľovej teploty",
           "presets": "Enabled Predvoľby",
-          "cooler": "Chladiace zariadenie (voliteľné)"
+          "cooler": "Chladiace zariadenie (voliteľné)",
+          "mpc_v2_supply_sensor": "MPC v2 teplota prívodu",
+          "mpc_v2_dhw_sensor": "MPC v2 prepnutie teplej vody"
         },
         "data_description": {
           "name": "Názov tohto termostatu a jeho zariadenia v Home Assistant.",
@@ -141,7 +147,9 @@
           "target_temp_max": "Najvyšší cieľ, ktorý môžete nastaviť. Auto preberá rozsah, ktorý hlásia zariadenia.",
           "target_temp_step": "O koľko sa cieľ zmení za jeden krok. Auto preberá najhrubší krok, ktorý hlásia termostaty.",
           "presets": "Vyberte predvoľby, ktoré chcete mať k dispozícii pre tento termostat.",
-          "cooler": "Voliteľné. Klimatizácia alebo iná klimatizačná entita, ktorá chladí túto miestnosť spolu s termostatmi."
+          "cooler": "Voliteľné. Klimatizácia alebo iná klimatizačná entita, ktorá chladí túto miestnosť spolu s termostatmi.",
+          "mpc_v2_supply_sensor": "Voliteľné pre MPC v2: meraná teplota prívodu vykurovania. Počas ohrevu teplej vody sa ignoruje.",
+          "mpc_v2_dhw_sensor": "Voliteľné pre MPC v2: snímač nabíjania zásobníka. Zapnuté/1 znamená prerušený prietok do radiátorov."
         }
       },
       "advanced": {

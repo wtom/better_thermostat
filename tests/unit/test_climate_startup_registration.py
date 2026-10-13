@@ -42,6 +42,8 @@ WINDOW_ID = "binary_sensor.window"
 DOOR_ID = "binary_sensor.door"
 COOLER_ID = "climate.cooler"
 OUTDOOR_ID = "sensor.outdoor_temp"
+SUPPLY_ID = "sensor.heating_supply"
+DHW_ID = "sensor.dhw_pump"
 
 # Every optional entity off and no balance, calibration or maintenance
 # mode: the configuration whose sets hold only the unconditional members.
@@ -52,6 +54,8 @@ _BARE = {
     "door_sensor_entity_id": None,
     "cooler_entity_id": None,
     "outdoor_sensor_entity_id": None,
+    "mpc_v2_supply_sensor_entity_id": None,
+    "mpc_v2_dhw_sensor_entity_id": None,
 }
 
 
@@ -306,13 +310,15 @@ async def test_a_bare_configuration_subscribes_to_the_sensor_and_the_trvs():
 
 @pytest.mark.asyncio
 async def test_every_optional_entity_brings_exactly_one_subscription():
-    """All optional entities configured at once: seven subscriptions."""
+    """All optional entities configured at once: nine subscriptions."""
     bt = _startup_bt(
         humidity_sensor_entity_id=HUMIDITY_ID,
         window_sensor_entity_id=WINDOW_ID,
         door_sensor_entity_id=DOOR_ID,
         cooler_entity_id=COOLER_ID,
         outdoor_sensor_entity_id=OUTDOOR_ID,
+        mpc_v2_supply_sensor_entity_id=SUPPLY_ID,
+        mpc_v2_dhw_sensor_entity_id=DHW_ID,
     )
 
     registered = await _run_finalize_startup(bt)
@@ -325,6 +331,8 @@ async def test_every_optional_entity_brings_exactly_one_subscription():
             ((DOOR_ID,), bt._trigger_door_change),
             ((COOLER_ID,), bt._trigger_cooler_change),
             ((OUTDOOR_ID,), bt._trigger_outdoor_change),
+            ((SUPPLY_ID,), bt._trigger_mpc_v2_input_change),
+            ((DHW_ID,), bt._trigger_mpc_v2_input_change),
         ],
     )
 
@@ -338,6 +346,8 @@ async def test_every_optional_entity_brings_exactly_one_subscription():
         ("door_sensor_entity_id", DOOR_ID, "_trigger_door_change"),
         ("cooler_entity_id", COOLER_ID, "_trigger_cooler_change"),
         ("outdoor_sensor_entity_id", OUTDOOR_ID, "_trigger_outdoor_change"),
+        ("mpc_v2_supply_sensor_entity_id", SUPPLY_ID, "_trigger_mpc_v2_input_change"),
+        ("mpc_v2_dhw_sensor_entity_id", DHW_ID, "_trigger_mpc_v2_input_change"),
     ],
 )
 async def test_an_optional_entity_adds_its_own_handler_and_no_other(

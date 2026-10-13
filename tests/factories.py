@@ -263,6 +263,8 @@ STAND_IN_DEFAULTS: dict[str, Callable[[], object]] = {
     "flight_recorder": FlightRecorder,
     "task_manager": TaskManager,
     "bt_target_temperature_step": lambda: None,
+    "mpc_v2_supply_sensor_entity_id": lambda: None,
+    "mpc_v2_dhw_sensor_entity_id": lambda: None,
     "_unique_id": lambda: None,
 }
 

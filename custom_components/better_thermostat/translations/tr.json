@@ -23,7 +23,9 @@
           "target_temp_min": "Minimum hedef sıcaklık",
           "target_temp_max": "Maksimum hedef sıcaklık",
           "target_temp_step": "Hedef sıcaklık adımı",
-          "presets": "Etkin ön ayarlar"
+          "presets": "Etkin ön ayarlar",
+          "mpc_v2_supply_sensor": "MPC v2 gidiş sıcaklığı",
+          "mpc_v2_dhw_sensor": "MPC v2 sıcak su yönlendirmesi"
         },
         "data_description": {
           "name": "Bu termostatın ve cihazının Home Assistant'taki adı.",
@@ -44,7 +46,9 @@
           "target_temp_min": "Ayarlayabileceğiniz en düşük hedef. Auto, cihazlarınızın bildirdiği aralığı kullanır.",
           "target_temp_max": "Ayarlayabileceğiniz en yüksek hedef. Auto, cihazlarınızın bildirdiği aralığı kullanır.",
           "target_temp_step": "Hedefin her adımda ne kadar değiştiği. Auto, termostatlarınızın bildirdiği en kaba adımı kullanır.",
-          "presets": "Bu termostat için kullanılabilir olmasını istediğiniz ön ayarları seçin."
+          "presets": "Bu termostat için kullanılabilir olmasını istediğiniz ön ayarları seçin.",
+          "mpc_v2_supply_sensor": "MPC v2 için isteğe bağlı: Ölçülen ısıtma gidiş sıcaklığı. Kullanım suyu ısıtılırken yok sayılır.",
+          "mpc_v2_dhw_sensor": "MPC v2 için isteğe bağlı: Sıcak su yükleme sensörü. Açık/1, radyatörlere akışın kesildiğini gösterir."
         }
       },
       "advanced": {
@@ -120,7 +124,9 @@
           "target_temp_max": "Maksimum hedef sıcaklık",
           "target_temp_step": "Hedef sıcaklık adımı",
           "presets": "Etkin ön ayarlar",
-          "cooler": "Soğutma cihazı (isteğe bağlı)"
+          "cooler": "Soğutma cihazı (isteğe bağlı)",
+          "mpc_v2_supply_sensor": "MPC v2 gidiş sıcaklığı",
+          "mpc_v2_dhw_sensor": "MPC v2 sıcak su yönlendirmesi"
         },
         "data_description": {
           "name": "Bu termostatın ve cihazının Home Assistant'taki adı.",
@@ -141,7 +147,9 @@
           "target_temp_max": "Ayarlayabileceğiniz en yüksek hedef. Auto, cihazlarınızın bildirdiği aralığı kullanır.",
           "target_temp_step": "Hedefin her adımda ne kadar değiştiği. Auto, termostatlarınızın bildirdiği en kaba adımı kullanır.",
           "presets": "Bu termostat için kullanılabilir olmasını istediğiniz ön ayarları seçin.",
-          "cooler": "İsteğe bağlı. Termostatlarla birlikte bu odayı soğutan bir klima veya başka bir iklim varlığı."
+          "cooler": "İsteğe bağlı. Termostatlarla birlikte bu odayı soğutan bir klima veya başka bir iklim varlığı.",
+          "mpc_v2_supply_sensor": "MPC v2 için isteğe bağlı: Ölçülen ısıtma gidiş sıcaklığı. Kullanım suyu ısıtılırken yok sayılır.",
+          "mpc_v2_dhw_sensor": "MPC v2 için isteğe bağlı: Sıcak su yükleme sensörü. Açık/1, radyatörlere akışın kesildiğini gösterir."
         }
       },
       "advanced": {

@@ -47,6 +47,8 @@ Better Thermostat now supports multiple advanced control strategies to optimize 
 - **TPI (Time Proportional Integral)**: A control method that cycles the valve on and off (or modulates it) to maintain a stable temperature, reducing overshoot.
 - **AI Time Based**: Uses a custom algorithm based on simple measurements and calculations (not actual AI) to calculate the required heating power and adjusts the TRV calibration to achieve it. This improves upon the standard TRV internal algorithm. It is the default.
 - **MPC v2** (experimental): A predictive controller with a Kalman observer and a quadratic-program optimiser, written for TRVs with direct valve control.
+
+  Optionally select a measured heating supply temperature and a domestic-hot-water (DHW) diversion signal in BT's configuration. With a valid supply reading, MPC v2 uses that temperature instead of its 65 °C model reference. The DHW signal should be `on`/`1` only while flow is diverted away from the radiators; during diversion, MPC v2 observes the room without heating input, pauses planning and re-identification, and retains its last valve target. If the supply reading is temporarily unavailable, the controller retains its previous model temperature; a new controller starts from the 65 °C reference. This option is experimental and does not change other control algorithms.
 - **Aggressive**: Pushes the TRV harder while heating for a faster warm-up, at the price of more overshoot.
 - **External Sensor Offset Only**: Corrects the TRV's internal sensor with your room sensor and nothing more.
 - **No Calibration**: Passes your target temperature to the TRV unchanged.

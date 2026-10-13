@@ -243,6 +243,8 @@ class MpcV2Controller:
         T_outdoor: float,
         T_rad: float | None = None,
         u_max: float | None = None,
+        T_water: float | None = None,
+        heating_flow_available: bool = True,
     ) -> tuple[float, MpcV2Diagnostics]:
         """Run one control cycle. Returns (valve_fraction, diagnostics).
 
@@ -265,6 +267,11 @@ class MpcV2Controller:
             Highest valve fraction the caller will pass on this cycle, such as
             the user's maximum opening. The plan stays below it and the
             integral's anti-windup treats it as the upper rail.
+        T_water : float | None, optional
+            Measured supply temperature in Celsius, or the previous model
+            value if no valid reading is available.
+        heating_flow_available : bool, optional
+            False while DHW diversion interrupts flow to the radiators.
 
         Between re-plans the cycle returns the command of the last plan. The
         applied input the caller confirms through :meth:`set_applied_u` feeds
@@ -272,6 +279,10 @@ class MpcV2Controller:
         device that reports its position late would otherwise turn its old
         position into a new command.
         """
+        if T_water is not None:
+            # Both plant resolutions share this parameter object. The supply
+            # temperature is an observed input, not a new learned plant prior.
+            self.params.plant.T_water = T_water
         if not self._initialised:
             T_rad_init = T_rad if T_rad is not None else T_room
             self.kalman.initialise(np.array([T_room, T_rad_init]))
@@ -292,10 +303,21 @@ class MpcV2Controller:
         # remains on its fixed coarse planning grid; mixing those two time
         # bases was the source of large artificial DOB excursions on sparse
         # (typically five-minute) Home Assistant updates.
-        x_hat = self.kalman.update(T_room, self._last_u, T_outdoor, dt_s=dt_s)
+        applied_u = self._last_u if heating_flow_available else 0.0
+        x_hat = self.kalman.update(T_room, applied_u, T_outdoor, dt_s=dt_s)
         # The disturbance observer takes the share of the residual the filter
         # moved its room estimate by, not the raw innovation.
         self.dob.update(self.kalman.room_correction, dt_s)
+
+        if not heating_flow_available:
+            # A DHW diverter disconnects the radiator circuit even if its
+            # valve remains open. Observe the room with zero heating input,
+            # but do not re-plan or write a valve during the interruption.
+            self._last_u = 0.0
+            self._u_history.clear()
+            self._last_mpc_t_s = t_s
+            self._next_mpc_t_s = t_s
+            return self._command_u, self._diagnostics()
 
         # The governor runs behind the observer and judges which setpoints are
         # reachable on this cycle's fast estimate. The QP plans with the slow

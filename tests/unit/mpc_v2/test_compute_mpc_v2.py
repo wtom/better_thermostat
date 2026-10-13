@@ -92,6 +92,44 @@ def test_first_call_creates_controller_and_returns_percent() -> None:
     assert state.last_percent == float(out.valve_percent)
 
 
+def test_measured_supply_updates_existing_controller() -> None:
+    """A new supply reading changes both plant grids without losing state."""
+    first = replace(_baseline_input(), supply_temperature=35.0)
+    out, state = compute_mpc_v2(first, MpcV2Params(), now=1000.0)
+    assert out is not None
+    controller = state.controller
+    assert controller is not None
+    assert controller.plant_fine.params.T_water == 35.0
+    second = replace(first, supply_temperature=33.0)
+    out, state = compute_mpc_v2(second, MpcV2Params(), state, now=1300.0)
+    assert out is not None
+    assert state.controller is controller
+    assert controller.plant_fine.params.T_water == 33.0
+    assert controller.plant_coarse.params.T_water == 33.0
+
+
+def test_dhw_diversion_observes_without_replanning() -> None:
+    """A diverted circuit has zero heat input and sends no new valve command."""
+    first = replace(_baseline_input(), supply_temperature=35.0)
+    out, state = compute_mpc_v2(first, MpcV2Params(), now=1000.0)
+    assert out is not None
+    controller = state.controller
+    assert controller is not None
+    prior_command = state.last_percent
+    diverted = replace(first, supply_temperature=None, heating_flow_available=False)
+    out, state = compute_mpc_v2(diverted, MpcV2Params(), state, now=1300.0)
+    assert out is not None
+    assert out.valve_percent == prior_command
+    assert state.controller is controller
+    assert state.last_percent == prior_command
+    assert controller._last_u == 0.0
+    assert controller.plant_fine.params.T_water == 35.0
+    resumed = replace(first, supply_temperature=34.0)
+    out, state = compute_mpc_v2(resumed, MpcV2Params(), state, now=1600.0)
+    assert out is not None
+    assert state.controller is controller
+
+
 def test_max_opening_percent_is_honoured() -> None:
     """The valve percent never exceeds the configured max_opening_percent."""
     params = MpcV2Params()
@@ -119,6 +157,8 @@ def _step_returning(fraction: float):
         T_outdoor: float,
         T_rad: float | None = None,
         u_max: float | None = None,
+        T_water: float | None = None,
+        heating_flow_available: bool = True,
     ) -> tuple[float, MpcV2Diagnostics]:
         _u, diagnostics = real_step(
             self,
@@ -128,6 +168,8 @@ def _step_returning(fraction: float):
             T_outdoor=T_outdoor,
             T_rad=T_rad,
             u_max=u_max,
+            T_water=T_water,
+            heating_flow_available=heating_flow_available,
         )
         return fraction, diagnostics
 

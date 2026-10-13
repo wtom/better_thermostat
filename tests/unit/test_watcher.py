@@ -156,6 +156,21 @@ class TestIsEntityAvailable:
 class TestGetOptionalSensors:
     """Tests for get_optional_sensors function."""
 
+    def test_includes_configured_mpc_v2_supply_and_dhw_sensors(self, mock_bt_instance):
+        """Both optional MPC inputs participate in sensor availability checks."""
+        from custom_components.better_thermostat.utils.watcher import (
+            get_optional_sensors,
+        )
+
+        mock_bt_instance.mpc_v2_supply_sensor_entity_id = "sensor.heating_supply"
+        mock_bt_instance.mpc_v2_dhw_sensor_entity_id = "sensor.dhw_pump"
+
+        result = get_optional_sensors(mock_bt_instance)
+
+        assert "sensor.heating_supply" in result
+        assert "sensor.dhw_pump" in result
+        assert len(result) == 6
+
     def test_returns_all_optional_sensors(self, mock_bt_instance):
         """Test that all configured optional sensors are returned."""
         from custom_components.better_thermostat.utils.watcher import (

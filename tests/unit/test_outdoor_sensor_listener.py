@@ -116,3 +116,13 @@ async def test_outdoor_change_skips_during_maintenance():
 
     bt._ambient_mock.assert_not_awaited()
     bt.control_queue_task.put_nowait.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mpc_v2_supply_or_dhw_change_enqueues_control_without_threshold_flip():
+    """A supply/diverter event must not wait for the periodic control tick."""
+    bt = _make_self(call_for_heat_after=True, last_call_for_heat=True)
+
+    await BetterThermostat._trigger_mpc_v2_input_change(bt, MagicMock())
+
+    bt.control_queue_task.put_nowait.assert_called_once_with(bt)

@@ -23,7 +23,9 @@
           "target_temp_min": "Température cible minimale",
           "target_temp_max": "Température cible maximale",
           "target_temp_step": "Pas de la température cible",
-          "presets": "Préréglages activés"
+          "presets": "Préréglages activés",
+          "mpc_v2_supply_sensor": "MPC v2 température de départ",
+          "mpc_v2_dhw_sensor": "MPC v2 bascule eau chaude"
         },
         "data_description": {
           "name": "Le nom de ce thermostat et de son appareil dans Home Assistant.",
@@ -44,7 +46,9 @@
           "target_temp_min": "La consigne la plus basse que vous pouvez régler. Auto reprend la plage indiquée par vos appareils.",
           "target_temp_max": "La consigne la plus haute que vous pouvez régler. Auto reprend la plage indiquée par vos appareils.",
           "target_temp_step": "De combien la consigne change à chaque pas. Auto reprend le pas le plus grossier de vos thermostats.",
-          "presets": "Sélectionnez les préréglages qui doivent être disponibles pour ce thermostat."
+          "presets": "Sélectionnez les préréglages qui doivent être disponibles pour ce thermostat.",
+          "mpc_v2_supply_sensor": "Facultatif pour MPC v2 : température mesurée du départ chauffage. Ignorée pendant la production d’eau chaude.",
+          "mpc_v2_dhw_sensor": "Facultatif pour MPC v2 : capteur de charge d’eau chaude. Activé/1 signifie que le débit vers les radiateurs est interrompu."
         }
       },
       "advanced": {
@@ -120,7 +124,9 @@
           "target_temp_max": "Température cible maximale",
           "target_temp_step": "Pas de la température cible",
           "presets": "Préréglages activés",
-          "cooler": "Le dispositif de refroidissement (optionnel)"
+          "cooler": "Le dispositif de refroidissement (optionnel)",
+          "mpc_v2_supply_sensor": "MPC v2 température de départ",
+          "mpc_v2_dhw_sensor": "MPC v2 bascule eau chaude"
         },
         "data_description": {
           "name": "Le nom de ce thermostat et de son appareil dans Home Assistant.",
@@ -141,7 +147,9 @@
           "target_temp_max": "La consigne la plus haute que vous pouvez régler. Auto reprend la plage indiquée par vos appareils.",
           "target_temp_step": "De combien la consigne change à chaque pas. Auto reprend le pas le plus grossier de vos thermostats.",
           "presets": "Sélectionnez les préréglages qui doivent être disponibles pour ce thermostat.",
-          "cooler": "Facultatif. Un climatiseur ou une autre entité climatique qui refroidit cette pièce en plus des thermostats."
+          "cooler": "Facultatif. Un climatiseur ou une autre entité climatique qui refroidit cette pièce en plus des thermostats.",
+          "mpc_v2_supply_sensor": "Facultatif pour MPC v2 : température mesurée du départ chauffage. Ignorée pendant la production d’eau chaude.",
+          "mpc_v2_dhw_sensor": "Facultatif pour MPC v2 : capteur de charge d’eau chaude. Activé/1 signifie que le débit vers les radiateurs est interrompu."
         }
       },
       "advanced": {

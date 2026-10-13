@@ -70,6 +70,7 @@ def compute_mpc_v2(
         inp.room_temperature,
         inp.target_temperature,
         inp.outdoor_temperature,
+        inp.supply_temperature,
         inp.trv_temperature,
         inp.applied_valve_percent,
     ):
@@ -151,7 +152,18 @@ def compute_mpc_v2(
         T_outdoor=T_outdoor,
         T_rad=inp.trv_temperature,
         u_max=None if cap_percent is None else cap_percent / 100.0,
+        T_water=inp.supply_temperature,
+        heating_flow_available=inp.heating_flow_available,
     )
+
+    if not inp.heating_flow_available:
+        # Keep the last valve intention, rather than letting the normal
+        # calibration fallback replace direct-valve control during DHW.
+        if state.last_percent is None:
+            return None, state
+        return MpcV2Output(
+            valve_percent=int(state.last_percent), diagnostics=diag
+        ), state
 
     # Round half up. The built-in ``round`` is half to even, so it sends every
     # second exact half percent down (12.5 → 12) and the next one up (13.5 →

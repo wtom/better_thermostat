@@ -53,7 +53,9 @@ from .utils.const import (
     CONF_HOMEMATICIP,
     CONF_HUMIDITY_SENSOR,
     CONF_MODEL,
+    CONF_MPC_V2_DHW_SENSOR,
     CONF_MPC_V2_PLANT_PRESET,
+    CONF_MPC_V2_SUPPLY_SENSOR,
     CONF_NO_OFF_SYSTEM_MODE,
     CONF_OFF_TEMPERATURE,
     CONF_OUTDOOR_SENSOR,
@@ -260,6 +262,8 @@ _UserDraft = TypedDict(  # noqa: UP013
         "door_sensors": str | None,
         "humidity_sensor": str | None,
         "outdoor_sensor": str | None,
+        "mpc_v2_supply_sensor": str | None,
+        "mpc_v2_dhw_sensor": str | None,
         "weather": str | None,
         "window_off_delay": NotRequired[int],
         "window_off_delay_after": NotRequired[int],
@@ -386,6 +390,8 @@ def _merged_settings(
     merged[CONF_DOOR_SENSORS] = draft[CONF_DOOR_SENSORS]
     merged[CONF_HUMIDITY_SENSOR] = draft[CONF_HUMIDITY_SENSOR]
     merged[CONF_OUTDOOR_SENSOR] = draft[CONF_OUTDOOR_SENSOR]
+    merged[CONF_MPC_V2_SUPPLY_SENSOR] = draft[CONF_MPC_V2_SUPPLY_SENSOR]
+    merged[CONF_MPC_V2_DHW_SENSOR] = draft[CONF_MPC_V2_DHW_SENSOR]
     merged[CONF_WEATHER] = draft[CONF_WEATHER]
     if CONF_WINDOW_OFF_DELAY in draft:
         merged[CONF_WINDOW_OFF_DELAY] = draft[CONF_WINDOW_OFF_DELAY]
@@ -837,6 +843,14 @@ def _build_user_fields(
         device_class="temperature",
     )
     add_entity_selector(
+        CONF_MPC_V2_SUPPLY_SENSOR,
+        domain=["sensor", "input_number", "number"],
+        device_class="temperature",
+    )
+    add_entity_selector(
+        CONF_MPC_V2_DHW_SENSOR, domain=["sensor", "binary_sensor", "input_boolean"]
+    )
+    add_entity_selector(
         CONF_WINDOW_SENSORS,
         domain=["group", "sensor", "input_boolean", "binary_sensor"],
     )
@@ -996,6 +1010,10 @@ def _normalize_user_submission(
         CONF_DOOR_SENSORS: _entity_or_none(user_input.get(CONF_DOOR_SENSORS)),
         CONF_HUMIDITY_SENSOR: _entity_or_none(user_input.get(CONF_HUMIDITY_SENSOR)),
         CONF_OUTDOOR_SENSOR: _entity_or_none(user_input.get(CONF_OUTDOOR_SENSOR)),
+        CONF_MPC_V2_SUPPLY_SENSOR: _entity_or_none(
+            user_input.get(CONF_MPC_V2_SUPPLY_SENSOR)
+        ),
+        CONF_MPC_V2_DHW_SENSOR: _entity_or_none(user_input.get(CONF_MPC_V2_DHW_SENSOR)),
         CONF_WEATHER: _entity_or_none(user_input.get(CONF_WEATHER)),
         CONF_OFF_TEMPERATURE: _int_or(off_temperature, suggested_off_temperature),
         CONF_TOLERANCE: _float_or(

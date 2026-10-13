@@ -195,6 +195,40 @@ def _get_current_outdoor_temperature(self: BetterThermostat) -> float | None:
     return None
 
 
+def _get_mpc_v2_supply_temperature(self: BetterThermostat) -> float | None:
+    """Read a measured heating supply in Celsius, if one is configured."""
+    entity_id = self.mpc_v2_supply_sensor_entity_id
+    if entity_id is None:
+        return None
+    state = self.hass.states.get(entity_id)
+    if state is None:
+        return None
+    temperature = convert_to_float_celsius(
+        state.state,
+        self.device_name,
+        "_get_mpc_v2_supply_temperature()",
+        unit_of_measurement=state.attributes.get("unit_of_measurement"),
+    )
+    if temperature is None or not math.isfinite(temperature):
+        return None
+    return temperature if 10.0 <= temperature <= 90.0 else None
+
+
+def _mpc_v2_heating_flow_available(self: BetterThermostat) -> bool:
+    """Treat a configured DHW-diversion signal as a heating-flow interruption."""
+    entity_id = self.mpc_v2_dhw_sensor_entity_id
+    if entity_id is None:
+        return True
+    state = self.hass.states.get(entity_id)
+    if state is None:
+        return False
+    value = state.state.lower()
+    try:
+        return float(value) == 0.0
+    except ValueError:
+        return value in ("off", "false", "closed")
+
+
 def _get_solar_context(self: BetterThermostat) -> tuple[bool, float]:
     """Daylight flag plus current solar intensity (0.0 below the horizon)."""
     is_day = True
@@ -526,7 +560,8 @@ def _build_mpc_v2_reid_key(self: BetterThermostat) -> str:
     across all target-temperature buckets and all TRVs of a group.
     """
     uid = resolve_unique_id(self)
-    return f"{uid}:reid"
+    supply_sensor = self.mpc_v2_supply_sensor_entity_id
+    return f"{uid}:reid:supply:{supply_sensor}" if supply_sensor else f"{uid}:reid"
 
 
 def _lookup_mpc_v2_reid(
@@ -545,6 +580,9 @@ def _lookup_mpc_v2_reid(
     result = state_mgr.get_mpc_v2_reid(reid_key)
     if result is not None:
         return result
+    if self.mpc_v2_supply_sensor_entity_id is not None:
+        # Old 65 °C fits cannot seed a model with measured supply input.
+        return None
     uid_entity = mpc_key.rsplit(":", 1)[0]
     candidates = [
         data
@@ -563,6 +601,8 @@ def _record_mpc_v2_reid_sample(
     applied_valve_percent: float | None,
     trv_temperature: float | None,
     outdoor_temperature: float | None,
+    supply_temperature: float | None = None,
+    heating_flow_available: bool = True,
 ) -> None:
     """Append one observation to the re-identification buffer for a key.
 
@@ -590,11 +630,14 @@ def _record_mpc_v2_reid_sample(
     if room_temperature is None:
         return
     t_room = float(room_temperature)
-    if applied_valve_percent is None:
-        # A current MPC proposal is not evidence of a physical valve input:
-        # the write can still be deferred, clamped, or fail.
-        return
-    u_frac = applied_valve_percent / 100.0
+    if heating_flow_available:
+        if applied_valve_percent is None:
+            # A proposal is not evidence of a physical valve input: its
+            # write can still be deferred, clamped, or fail.
+            return
+        u_frac = applied_valve_percent / 100.0
+    else:
+        u_frac = 0.0
     if not math.isfinite(u_frac):
         return
     u_frac = max(0.0, min(1.0, u_frac))
@@ -605,10 +648,11 @@ def _record_mpc_v2_reid_sample(
             T_room=t_room,
             u_frac=u_frac,
             T_outdoor=outdoor_temperature,
+            T_water=supply_temperature,
             T_trv=trv_temperature
             if isinstance(trv_temperature, (int, float))
             else None,
-            window_open=self.contact_open,
+            window_open=self.contact_open or not heating_flow_available,
         )
     )
 
@@ -795,6 +839,11 @@ def _compute_mpc_v2_balance(
     else:
         mpc_key = build_mpc_key(self, entity_id)
 
+    if self.mpc_v2_supply_sensor_entity_id is not None:
+        # A live-supply model must not restore the observer or integral that
+        # ran against the old fixed-65 °C reference.
+        mpc_key = f"{mpc_key}:supply:{self.mpc_v2_supply_sensor_entity_id}"
+
     # In a group all TRVs share one controller state, so the plant preset must
     # be group-stable: derive it from a deterministic representative (first TRV
     # by entity_id) rather than whichever TRV is currently being dispatched,
@@ -830,6 +879,10 @@ def _compute_mpc_v2_balance(
     v2_params = MpcV2Params(plant=plant_prior)
 
     outdoor_temperature = _get_current_outdoor_temperature(self)
+    heating_flow_available = _mpc_v2_heating_flow_available(self)
+    supply_temperature = (
+        _get_mpc_v2_supply_temperature(self) if heating_flow_available else None
+    )
     # The single-TRV path has one physical input.  A group controller's
     # distributed outputs are intentionally not collapsed into a fictional
     # single valve fraction; it keeps its optimistic command until group
@@ -863,6 +916,8 @@ def _compute_mpc_v2_balance(
                 bt_name=self.device_name,
                 entity_id=entity_id,
                 outdoor_temperature=outdoor_temperature,
+                supply_temperature=supply_temperature,
+                heating_flow_available=heating_flow_available,
                 max_opening_percent=max_opening_percent,
                 applied_valve_percent=controller_applied_percent,
             ),
@@ -881,15 +936,26 @@ def _compute_mpc_v2_balance(
 
     state_mgr.set_mpc_v2_live(mpc_key, mpc_v2_state)
 
-    if preset == MpcV2PlantPreset.AUTO and not is_multi_trv:
+    if (
+        preset == MpcV2PlantPreset.AUTO
+        and not is_multi_trv
+        and (
+            not heating_flow_available
+            or self.mpc_v2_supply_sensor_entity_id is None
+            or supply_temperature is not None
+        )
+    ):
         _record_mpc_v2_reid_sample(
             self,
             reid_key,
             applied_valve_percent=confirmed_valve_percent,
             trv_temperature=trv_state.current_temperature,
             outdoor_temperature=outdoor_temperature,
+            supply_temperature=supply_temperature,
+            heating_flow_available=heating_flow_available,
         )
-        _maybe_start_mpc_v2_reid_fit(self, reid_key, v2_params)
+        if heating_flow_available:
+            _maybe_start_mpc_v2_reid_fit(self, reid_key, v2_params)
 
     if mpc_output is None:
         trv_state.calibration_balance = None

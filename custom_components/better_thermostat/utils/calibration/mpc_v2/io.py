@@ -21,6 +21,8 @@ class MpcV2Input:
     room_temperature: float | None
     trv_temperature: float | None = None
     outdoor_temperature: float | None = None
+    supply_temperature: float | None = None
+    heating_flow_available: bool = True
     window_open: bool = False
     heating_allowed: bool = True
     max_opening_percent: float | None = None
