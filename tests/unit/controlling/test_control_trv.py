@@ -2089,8 +2089,19 @@ class TestBoostModeSafetyOverride:
             assert [call[2] for call in set_valve_calls] == [0]
 
 
-class TestMpcV2OffValve:
+class TestDirectValveOff:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "calibration_mode",
+        [
+            CalibrationMode.MPC_CALIBRATION,
+            CalibrationMode.MPC_V2_CALIBRATION,
+            CalibrationMode.TPI_CALIBRATION,
+            CalibrationMode.PID_CALIBRATION,
+            CalibrationMode.HEATING_POWER_CALIBRATION,
+            CalibrationMode.NO_CALIBRATION,
+        ],
+    )
     @pytest.mark.parametrize("cached_percent", [65, None])
     @pytest.mark.parametrize(
         ("window_open", "call_for_heat", "bt_hvac_mode"),
@@ -2101,13 +2112,13 @@ class TestMpcV2OffValve:
         ],
     )
     async def test_off_closes_direct_valve_without_an_opening_write(
-        self, window_open, call_for_heat, bt_hvac_mode, cached_percent
+        self, window_open, call_for_heat, bt_hvac_mode, cached_percent, calibration_mode
     ):
-        """An OFF intent closes even a valve left open by MPC v2."""
+        """An OFF intent closes a direct valve with any calibration strategy."""
         trv = _with_valve_channel(
             _default_trv_config(
                 advanced={
-                    "calibration_mode": CalibrationMode.MPC_V2_CALIBRATION,
+                    "calibration_mode": calibration_mode,
                     "calibration": CalibrationOutput.DIRECT_VALVE_BASED,
                     "no_off_system_mode": False,
                 }
@@ -2141,6 +2152,47 @@ class TestMpcV2OffValve:
             mock_convert.return_value = {
                 "temperature": 20.0,
                 "system_mode": HVACMode.HEAT,
+            }
+            assert await control_trv(mock_self, "climate.trv1") is True
+
+        mock_valve.assert_awaited_once()
+        assert mock_valve.call_args.args[2] == 0
+
+    @pytest.mark.asyncio
+    async def test_off_closes_direct_valve_in_hold(self):
+        trv = _with_valve_channel(
+            _default_trv_config(
+                advanced={
+                    "calibration_mode": CalibrationMode.MPC_V2_CALIBRATION,
+                    "calibration": CalibrationOutput.DIRECT_VALVE_BASED,
+                    "no_off_system_mode": False,
+                }
+            )
+        )
+        trv.last_valve_percent = 65
+        mock_self = _make_mock_self(
+            trv_state=HVACMode.HEAT,
+            trv_attrs={"temperature": 20.0},
+            bt_hvac_mode=HVACMode.OFF,
+            real_trvs={"climate.trv1": trv},
+        )
+        mock_self.kernel_state = replace(
+            mock_self.kernel_state, control_mode=ControlModeState(mode=ControlMode.HOLD)
+        )
+        with (
+            patch(_PATCHES["convert_outbound_states"]) as mock_convert,
+            patch(
+                _PATCHES["set_valve"], autospec=True, return_value=True
+            ) as mock_valve,
+            patch(
+                _PATCHES["override_set_hvac_mode"], autospec=True, return_value=False
+            ),
+            patch(_PATCHES["set_hvac_mode"], autospec=True),
+            patch("asyncio.sleep", new=AsyncMock()),
+        ):
+            mock_convert.return_value = {
+                "temperature": 20.0,
+                "system_mode": HVACMode.OFF,
             }
             assert await control_trv(mock_self, "climate.trv1") is True
 

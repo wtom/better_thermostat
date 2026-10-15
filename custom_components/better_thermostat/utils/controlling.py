@@ -2386,17 +2386,16 @@ async def control_trv(
                         _calibration_mode,
                         _calibration_output,
                     )
-                    # The kernel's OFF intent outranks a cached controller or
-                    # boost opening. Close a direct valve in this same write,
-                    # even when the controller has no current balance output.
-                    if (
-                        trv_desired.hvac_mode == HVACMode.OFF
-                        and _calibration_output == CalibrationOutput.DIRECT_VALVE_BASED
-                    ):
-                        valve_settings, _source = (
-                            {"valve_percent": 0, "apply_valve": True},
-                            "hvac_off",
-                        )
+                # HVAC OFF closes a direct valve regardless of calibration
+                # strategy or HOLD, even without a current balance output.
+                if (
+                    trv_desired.hvac_mode == HVACMode.OFF
+                    and _calibration_output == CalibrationOutput.DIRECT_VALVE_BASED
+                ):
+                    valve_settings, _source = (
+                        {"valve_percent": 0, "apply_valve": True},
+                        "hvac_off",
+                    )
                 # A valve with no channel to write through is not pursued,
                 # and no retry is scheduled for it, until one appears.
                 if valve_settings is not None and not valve_channel_available(
