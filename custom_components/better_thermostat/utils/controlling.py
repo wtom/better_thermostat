@@ -2386,6 +2386,17 @@ async def control_trv(
                         _calibration_mode,
                         _calibration_output,
                     )
+                    # The kernel's OFF intent outranks a cached controller or
+                    # boost opening. Close a direct valve in this same write,
+                    # even when the controller has no current balance output.
+                    if (
+                        trv_desired.hvac_mode == HVACMode.OFF
+                        and _calibration_output == CalibrationOutput.DIRECT_VALVE_BASED
+                    ):
+                        valve_settings, _source = (
+                            {"valve_percent": 0, "apply_valve": True},
+                            "hvac_off",
+                        )
                 # A valve with no channel to write through is not pursued,
                 # and no retry is scheduled for it, until one appears.
                 if valve_settings is not None and not valve_channel_available(
@@ -2436,7 +2447,9 @@ async def control_trv(
                             _schedule_budget_retry(
                                 self,
                                 entity_id,
-                                _budget_remaining(self, entity_id, "valve"),
+                                MIN_WRITE_INTERVAL_S
+                                if target_percent == 0
+                                else _budget_remaining(self, entity_id, "valve"),
                             )
                     else:
                         # A deferred valve write re-derives on the catch-up
@@ -2466,45 +2479,6 @@ async def control_trv(
                 _new_hvac_mode = HVACMode.OFF
             else:
                 _new_hvac_mode = _remapped_states.get("system_mode", None)
-
-            # Safety override: if boost mode was active but we forced OFF (open contact/no-heat),
-            # ensure valve is reset to 0% to prevent overheating. Only direct-valve
-            # calibration types accept valve commands; LOCAL_BASED and
-            # TARGET_TEMP_BASED control via offset / setpoint instead.
-            if (
-                is_boost_heating(snapshot)
-                and _new_hvac_mode == HVACMode.OFF
-                and _calibration_output == CalibrationOutput.DIRECT_VALVE_BASED
-            ):
-                _LOGGER.debug(
-                    "better_thermostat %s: Boost safety override - resetting valve to 0%% because HVAC mode is OFF",
-                    self.device_name,
-                )
-                # Closing the valve is the overheat-safe direction and skips
-                # the budget gate, but it is a real write: it passes the
-                # safety hull and occupies the budget slot like any other.
-                _reset_percent = round(
-                    _through_safety_hull(
-                        snapshot, entity_id, valve_percent=0.0
-                    ).valve_percent
-                    or 0.0
-                )
-                if not _valve_at_target(self, entity_id, _reset_percent):
-                    _consume_budget(self, entity_id, "valve", bypass=True)
-                    ok = await set_valve(self, entity_id, _reset_percent)
-                    if not ok:
-                        _LOGGER.debug(
-                            "better_thermostat %s: delegate.set_valve returned False for "
-                            "safety reset (target=%s%%, entity=%s)",
-                            self.device_name,
-                            _reset_percent,
-                            entity_id,
-                        )
-                        # The valve never moved; re-derive on a catch-up cycle
-                        # so the reset is not dropped permanently. The reset
-                        # bypasses the budget, so the retry keeps the normal
-                        # spacing instead of a HomematicIP head's interval.
-                        _schedule_budget_retry(self, entity_id, MIN_WRITE_INTERVAL_S)
 
             # Manage TRVs with no HVACMode.OFF
             _trv_has_no_off = _no_off_system_mode(self.real_trvs[entity_id])
