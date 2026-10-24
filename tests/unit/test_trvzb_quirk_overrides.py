@@ -315,23 +315,15 @@ class TestMaybeSelectExternalSensor:
         assert _selector_calls(mock_self) == []
 
     @pytest.mark.asyncio
-    async def test_a_trv_on_its_local_sensor_is_switched_to_the_remote_one(
-        self, monkeypatch
-    ):
-        """Zigbee2MQTT 2.14.2 names the options after the temperature source."""
+    async def test_a_trv_on_its_local_sensor_is_left_alone(self, monkeypatch):
+        """Keep internal readings available for multi-TRV valve balancing."""
         mock_self = _make_selector_self("local_temperature", options=Z2M_2_14_2_OPTIONS)
         monkeypatch.setattr(
             quirk.er, "async_get", lambda hass: mock_self._registry, raising=True
         )
 
-        assert await quirk.maybe_select_external_sensor(mock_self, "climate.trv1")
-
-        assert _selector_calls(mock_self) == [
-            {
-                "entity_id": "select.trv1_temperature_sensor_select",
-                "option": "remote_temperature",
-            }
-        ]
+        assert not await quirk.maybe_select_external_sensor(mock_self, "climate.trv1")
+        assert _selector_calls(mock_self) == []
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -544,6 +536,36 @@ class TestExternalTemperatureWriteSelectsTheSensor:
                 "option": "external",
             },
         ]
+
+    @pytest.mark.asyncio
+    async def test_writing_input_preserves_local_selection(self, monkeypatch):
+        trv = _registry_entry("climate.trv1")
+        number = _registry_entry(
+            "number.trv1_external_temperature_input",
+            translation_key="external_temperature_input",
+        )
+        selector = _registry_entry(
+            "select.trv1_temperature_sensor_select",
+            translation_key="temperature_sensor_select",
+        )
+        mock_self = _make_selector_self(
+            "local_temperature",
+            options=Z2M_2_14_2_OPTIONS,
+            entries=[trv, number, selector],
+        )
+        mock_self.real_trvs = {
+            "climate.trv1": Trv(entity_id="climate.trv1", model="TRVZB")
+        }
+        monkeypatch.setattr(
+            quirk.er, "async_get", lambda hass: mock_self._registry, raising=True
+        )
+
+        assert await quirk.maybe_set_external_temperature(
+            mock_self, "climate.trv1", 21.42
+        )
+        assert [
+            call.args[2] for call in mock_self.hass.services.async_call.await_args_list
+        ] == [{"entity_id": "number.trv1_external_temperature_input", "value": 21.4}]
 
 
 VALVE_OPENING = "number.trv1_valve_opening_degree"
