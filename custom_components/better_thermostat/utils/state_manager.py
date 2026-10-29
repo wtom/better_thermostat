@@ -1492,7 +1492,9 @@ class StateManager:
         self._state.mpc[key] = mpc
         self._dirty = True
 
-    def get_mpc_v2_live(self, key: str, params: MpcV2Params) -> MpcV2State:
+    def get_mpc_v2_live(
+        self, key: str, params: MpcV2Params, *, legacy_key: str | None = None
+    ) -> MpcV2State:
         """Return the live MPC v2 controller state, building it on first use.
 
         The live controller (Kalman/QP/governor) is kept in memory across
@@ -1504,6 +1506,8 @@ class StateManager:
         live = self._mpc_v2_live.get(key)
         if live is None:
             persisted = self._state.mpc_v2.get(key)
+            if persisted is None and legacy_key is not None:
+                persisted = self._state.mpc_v2.get(legacy_key)
             live = (
                 import_mpc_v2_state(_mpc_v2_payload(persisted), params, key=key)
                 if persisted is not None

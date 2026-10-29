@@ -62,7 +62,9 @@ class _InMemoryStateManager:
         """Store the MPC v1 state for key."""
         self._mpc[key] = state
 
-    def get_mpc_v2_live(self, key: str, params: MpcV2Params) -> MpcV2State:
+    def get_mpc_v2_live(
+        self, key: str, params: MpcV2Params, *, legacy_key: str | None = None
+    ) -> MpcV2State:
         """Return the live MPC v2 state for key, creating it on first use."""
         return self._mpc_v2.setdefault(key, MpcV2State())
 

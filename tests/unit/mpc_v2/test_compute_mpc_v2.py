@@ -102,6 +102,36 @@ def test_window_close_replans_before_the_normal_mpc_interval(monkeypatch) -> Non
     assert plans == 1
 
 
+def test_setpoint_change_replans_with_the_same_controller(monkeypatch) -> None:
+    """A small target step must not wait for the old plan or reset the room model."""
+    inp = _baseline_input(target_temperature=21.0)
+    params = MpcV2Params()
+    first, state = compute_mpc_v2(inp, params, now=1000.0)
+    assert first is not None
+    controller = state.controller
+    assert controller is not None
+    assert controller._next_mpc_t_s > 1020.0
+
+    plans = 0
+    original_solve = controller.optimiser.solve
+
+    def count_plan(**kwargs):
+        nonlocal plans
+        plans += 1
+        return original_solve(**kwargs)
+
+    monkeypatch.setattr(controller.optimiser, "solve", count_plan)
+    changed, state = compute_mpc_v2(
+        replace(inp, target_temperature=21.1), params, state, now=1020.0
+    )
+    assert changed is not None
+    assert state.controller is controller
+    assert plans == 1
+
+    compute_mpc_v2(replace(inp, target_temperature=21.1), params, state, now=1040.0)
+    assert plans == 1
+
+
 def test_heating_disallowed_returns_none() -> None:
     """Disallowed heating returns no command."""
     out, _ = compute_mpc_v2(_baseline_input(heating_allowed=False), MpcV2Params(), None)

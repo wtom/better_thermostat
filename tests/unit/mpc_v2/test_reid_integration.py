@@ -82,6 +82,27 @@ def _warm(mgr: StateManager, key: str, params: MpcV2Params) -> None:
 # -- StateManager: adopt + persistence ---------------------------------------
 
 
+def test_stable_v2_key_imports_the_current_bucket_snapshot_once() -> None:
+    """A new key keeps the previous observer instead of cold-starting on upgrade."""
+    mgr = _make_manager()
+    old_key = "uid:climate.x:t21.0"
+    new_key = "uid:climate.x:v2"
+    params = MpcV2Params()
+    _warm(mgr, old_key, params)
+    old = mgr.get_mpc_v2_live(old_key, params)
+    assert old.controller is not None
+    mgr._sync_mpc_v2_live()
+    mgr._mpc_v2_live.clear()
+
+    migrated = mgr.get_mpc_v2_live(new_key, params, legacy_key=old_key)
+
+    assert migrated.controller is not None
+    assert migrated.controller is not old.controller
+    assert migrated.controller.initialised
+    assert migrated.last_percent == old.last_percent
+    assert migrated.last_target_temperature is None
+
+
 def test_adopt_is_bumpless() -> None:
     """Adoption drops the live controller but carries its state across.
 

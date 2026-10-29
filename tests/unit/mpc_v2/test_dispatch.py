@@ -49,7 +49,9 @@ class _FakeStateManager:
         """Return self so ``state.mpc_v2_reid`` resolves like on the real store."""
         return self
 
-    def get_mpc_v2_live(self, key: str, params: MpcV2Params) -> MpcV2State:
+    def get_mpc_v2_live(
+        self, key: str, params: MpcV2Params, *, legacy_key: str | None = None
+    ) -> MpcV2State:
         """Return the live state for key, creating a fresh one on first use."""
         live = self._mpc_v2_live.get(key)
         if live is None:
@@ -235,6 +237,62 @@ def test_single_trv_passes_through_without_distribution() -> None:
     cal = _published_balance(real_trvs["climate.solo"])
     assert cal["debug"]["group_valve_pct"] == cal["debug"]["distributed_valve_pct"]
     assert cal["debug"]["controller_version"] == "v2"
+
+
+def test_setpoint_changes_keep_one_v2_room_state() -> None:
+    """Neither a small step nor a bucket crossing creates another observer."""
+    trv = _make_trv("climate.x", current_temperature=19.0, supports_valve=True)
+    bt = _make_bt(real_trvs={"climate.x": trv})
+    first, _ = _compute_mpc_v2_balance(bt, "climate.x")
+    assert first is not None
+    key = next(iter(bt.state_mgr._mpc_v2_live))
+    controller = bt.state_mgr._mpc_v2_live[key].controller
+    assert key == "bt_test:climate.x:v2"
+
+    for target in (21.1, 22.0):
+        bt.heat_target_temperature = target
+        out, _ = _compute_mpc_v2_balance(bt, "climate.x")
+        assert out is not None
+        assert bt.state_mgr._mpc_v2_live[key].controller is controller
+        assert list(bt.state_mgr._mpc_v2_live) == [key]
+
+
+def test_hvac_resume_replans_before_the_normal_interval(monkeypatch) -> None:
+    """The OFF transition bypasses calibration but marks the next plan due."""
+    from custom_components.better_thermostat.utils.calibration.mpc_v2 import (
+        compute as compute_module,
+    )
+
+    clock = [1_700_000_000.0]
+    monkeypatch.setattr(compute_module, "time", lambda: clock[0])
+    trv = _make_trv("climate.x", current_temperature=19.0, supports_valve=True)
+    bt = _make_bt(real_trvs={"climate.x": trv})
+    first, _ = _compute_mpc_v2_balance(bt, "climate.x")
+    assert first is not None
+    controller = next(iter(bt.state_mgr._mpc_v2_live.values())).controller
+    assert controller is not None
+
+    bt.bt_hvac_mode = HVACMode.OFF
+    bt._mpc_v2_resume_pending = True  # Set by the real climate mode setter.
+    clock[0] += 10.0
+    off, _ = _compute_mpc_v2_balance(bt, "climate.x")
+    assert off is None
+
+    plans = 0
+    original_solve = controller.optimiser.solve
+
+    def count_plan(**kwargs):
+        nonlocal plans
+        plans += 1
+        return original_solve(**kwargs)
+
+    monkeypatch.setattr(controller.optimiser, "solve", count_plan)
+    bt.bt_hvac_mode = HVACMode.HEAT
+    clock[0] += 10.0
+    resumed, _ = _compute_mpc_v2_balance(bt, "climate.x")
+    assert resumed is not None
+    assert plans == 1
+    assert not bt._mpc_v2_resume_pending
 
 
 def test_hvac_off_returns_none() -> None:
