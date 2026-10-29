@@ -235,6 +235,10 @@ class MpcV2Controller:
         """Return whether the observer holds an estimate of the room."""
         return self._initialised
 
+    def replan_on_resume(self) -> None:
+        """Make the first cycle after a heating interruption plan immediately."""
+        self._next_mpc_t_s = -1.0
+
     def step(
         self,
         t_s: float,
