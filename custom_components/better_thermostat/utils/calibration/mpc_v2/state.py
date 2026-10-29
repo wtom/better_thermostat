@@ -20,6 +20,9 @@ class MpcV2State:
     """Per-room runtime state — owned by the caller, persisted via the StateManager store."""
 
     controller: MpcV2Controller | None = None
+    # Intentionally not persisted: a restored controller replans on its first
+    # valid cycle instead of trusting a plan for an unknown previous setpoint.
+    last_target_temperature: float | None = None
     last_percent: float | None = None
     last_compute_ts: float = 0.0
     created_ts: float = 0.0

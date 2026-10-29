@@ -1167,6 +1167,7 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         # the room is switched into onto it; get_hvac_bt_mode() publishes it
         # and mode_remap() spells it for each device.
         self._bt_hvac_mode: HVACMode | None = None
+        self._mpc_v2_resume_pending = False
         self.closed_window_triggered = False
         self.call_for_heat = True
         self.ignore_states = False
@@ -4208,6 +4209,10 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
     @bt_hvac_mode.setter
     def bt_hvac_mode(self, value: HVACMode | None) -> None:
         """Set the BT-internal HVAC mode and advance the mode region."""
+        if value == HVACMode.OFF and self._bt_hvac_mode != HVACMode.OFF:
+            # Calibration is skipped while OFF, so the controller cannot see
+            # that cycle itself. Its first HEAT cycle must plan afresh.
+            self._mpc_v2_resume_pending = True
         self._bt_hvac_mode = value
         self.kernel_state = replace(
             self.kernel_state, mode=mode_set_hvac_mode(self.kernel_state.mode, value)

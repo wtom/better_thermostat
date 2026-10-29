@@ -125,6 +125,10 @@ def compute_mpc_v2(
         state.controller = MpcV2Controller(params)
         state.plant_signature = new_signature
 
+    if state.last_target_temperature != inp.target_temperature:
+        state.controller.replan_on_resume()
+        state.last_target_temperature = inp.target_temperature
+
     # A successful adapter write (or a device position echo) is the source of
     # truth for the preceding plant input.  In particular, do not assume that
     # the recommendation from the last call made it through a write budget.

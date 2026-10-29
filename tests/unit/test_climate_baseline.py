@@ -34,6 +34,19 @@ from custom_components.better_thermostat.utils.thermal_learning import (
 )
 from tests.factories import ThermostatStandIn, make_state
 
+
+def test_hvac_off_marks_mpc_v2_resume_pending() -> None:
+    """The mode setter records OFF even though calibration skips that cycle."""
+    bt = ThermostatStandIn()
+    bt._bt_hvac_mode = HVACMode.HEAT
+    bt._mpc_v2_resume_pending = False
+    bt.kernel_state = make_state()
+
+    BetterThermostat.bt_hvac_mode.fset(bt, HVACMode.OFF)
+
+    assert bt._mpc_v2_resume_pending
+
+
 # ---------------------------------------------------------------------------
 # Fixture
 # ---------------------------------------------------------------------------

@@ -834,15 +834,20 @@ def _compute_mpc_v2_balance(
         self, warmest_trv_id if is_multi_trv else entity_id
     )
 
-    if is_multi_trv:
-        mpc_key = build_mpc_group_key(self)
-    else:
-        mpc_key = build_mpc_key(self, entity_id)
+    # The v2 observer belongs to the room, not a target bucket. Keep the
+    # bucketed key only for reading old per-bucket re-ID results.
+    legacy_mpc_key = (
+        build_mpc_group_key(self) if is_multi_trv else build_mpc_key(self, entity_id)
+    )
+    mpc_key = f"{resolve_unique_id(self)}:{'group' if is_multi_trv else entity_id}:v2"
 
     if self.mpc_v2_supply_sensor_entity_id is not None:
         # A live-supply model must not restore the observer or integral that
         # ran against the old fixed-65 °C reference.
         mpc_key = f"{mpc_key}:supply:{self.mpc_v2_supply_sensor_entity_id}"
+        legacy_mpc_key = (
+            f"{legacy_mpc_key}:supply:{self.mpc_v2_supply_sensor_entity_id}"
+        )
 
     # In a group all TRVs share one controller state, so the plant preset must
     # be group-stable: derive it from a deterministic representative (first TRV
@@ -861,7 +866,7 @@ def _compute_mpc_v2_balance(
     # heuristic, which remains the fallback until the first accepted fit.
     reid_key = _build_mpc_v2_reid_key(self)
     reid_result = (
-        _lookup_mpc_v2_reid(self, reid_key, mpc_key)
+        _lookup_mpc_v2_reid(self, reid_key, legacy_mpc_key)
         if preset == MpcV2PlantPreset.AUTO
         else None
     )
@@ -904,7 +909,14 @@ def _compute_mpc_v2_balance(
     )
 
     try:
-        mpc_v2_state = state_mgr.get_mpc_v2_live(mpc_key, v2_params)
+        mpc_v2_state = state_mgr.get_mpc_v2_live(
+            mpc_key, v2_params, legacy_key=legacy_mpc_key
+        )
+        if (
+            getattr(self, "_mpc_v2_resume_pending", False)
+            and mpc_v2_state.controller is not None
+        ):
+            mpc_v2_state.controller.replan_on_resume()
         mpc_output, mpc_v2_state = compute_mpc_v2(
             MpcV2Input(
                 key=mpc_key,
@@ -935,6 +947,8 @@ def _compute_mpc_v2_balance(
         return None, False
 
     state_mgr.set_mpc_v2_live(mpc_key, mpc_v2_state)
+    if mpc_output is not None:
+        self._mpc_v2_resume_pending = False
 
     if (
         preset == MpcV2PlantPreset.AUTO
