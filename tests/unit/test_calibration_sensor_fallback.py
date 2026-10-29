@@ -81,7 +81,9 @@ class _StateStub:
         """Store ``tpi`` under ``key``."""
         self.tpi[key] = tpi
 
-    def get_mpc_v2_live(self, key: str, params) -> MpcV2State:
+    def get_mpc_v2_live(
+        self, key: str, params, *, legacy_key: str | None = None
+    ) -> MpcV2State:
         """Return the live MPC v2 state for ``key``, creating it on first access."""
         return self.mpc_v2_live.setdefault(key, MpcV2State())
 
