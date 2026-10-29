@@ -36,13 +36,15 @@ from tests.factories import ThermostatStandIn, make_state
 
 
 def test_hvac_off_marks_mpc_v2_resume_pending() -> None:
-    """The mode setter records OFF even though calibration skips that cycle."""
+    """A heating restart must not reuse the plan from before HVAC OFF."""
     bt = ThermostatStandIn()
     bt._bt_hvac_mode = HVACMode.HEAT
     bt._mpc_v2_resume_pending = False
     bt.kernel_state = make_state()
 
-    BetterThermostat.bt_hvac_mode.fset(bt, HVACMode.OFF)
+    setter = BetterThermostat.bt_hvac_mode.fset
+    assert setter is not None
+    setter(bt, HVACMode.OFF)
 
     assert bt._mpc_v2_resume_pending
 
