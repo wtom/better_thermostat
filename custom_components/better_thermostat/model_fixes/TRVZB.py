@@ -579,10 +579,10 @@ def _find_device_entity(
 async def maybe_select_external_sensor(self: ModelFixHost, entity_id: str) -> bool:
     """Point the TRV's sensor selector at the value BT writes.
 
-    Writing the external temperature input achieves nothing while the device
-    regulates on its own sensor, and it lands there on its own: a TRVZB that
-    is re-paired comes back on the internal sensor. So the selector is checked
-    alongside every write of the input it belongs to.
+    Writing the external temperature input affects the device's own control
+    only when it regulates on that input. The selector is checked alongside
+    every write, but an explicit ``local_temperature`` choice is respected:
+    its internal reading is needed for multi-TRV valve balancing.
 
     A device already on an option naming an external sensor is left alone,
     whichever of them it is: the choice between them is its owner's.
@@ -599,7 +599,7 @@ async def maybe_select_external_sensor(self: ModelFixHost, entity_id: str) -> bo
     -------
     bool
         True when the selector is on an external option, whether this call
-        put it there or found it there.
+        put it there or found it there. False for a local selection.
     """
     entity_registry = er.async_get(self.hass)
     reg_entity = entity_registry.async_get(entity_id)
@@ -623,6 +623,10 @@ async def maybe_select_external_sensor(self: ModelFixHost, entity_id: str) -> bo
     if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
         # A selector that is not reporting names no option, and the device
         # behind it is in no state to take one either.
+        return False
+    # A manual local selection must remain local: multi-TRV valve balancing
+    # needs the thermostats' distinct internal temperature readings.
+    if state.state == "local_temperature":
         return False
     if state.state.startswith(_ON_A_REMOTE_SENSOR):
         return True
@@ -720,8 +724,8 @@ async def maybe_set_external_temperature(
     Looks for number.* entity matching external_temperature_input and writes the
     given temperature, rounded to a tenth of a degree Celsius and converted into
     the unit the input publishes, held inside the range it publishes. The sensor
-    selector is pointed at that input alongside the write, because a device
-    regulating on its own sensor never reads it.
+    selector is checked alongside the write. An explicit local selection is
+    not overridden, so BT can still read the internal temperature.
 
     Parameters
     ----------
@@ -802,8 +806,8 @@ async def maybe_set_external_temperature(
             target,
             entity_id,
         )
-        # The value just written only reaches the control loop of a device
-        # that is regulating on it.
+        # An explicit local selection keeps the internal reading distinct,
+        # even though BT continues to mirror the room temperature here.
         await maybe_select_external_sensor(self, entity_id)
         return True
     except (
