@@ -70,6 +70,38 @@ def test_window_open_returns_none() -> None:
     assert state is not None
 
 
+def test_window_close_replans_before_the_normal_mpc_interval(monkeypatch) -> None:
+    """A committed window close must not reuse the pre-opening valve plan."""
+    inp = _baseline_input()
+    params = MpcV2Params()
+    first, state = compute_mpc_v2(inp, params, now=1000.0)
+    assert first is not None
+    controller = state.controller
+    assert controller is not None
+    assert controller._next_mpc_t_s > 1020.0
+
+    opened, state = compute_mpc_v2(
+        replace(inp, window_open=True), params, state, now=1010.0
+    )
+    assert opened is None
+
+    plans = 0
+    original_solve = controller.optimiser.solve
+
+    def count_plan(**kwargs):
+        nonlocal plans
+        plans += 1
+        return original_solve(**kwargs)
+
+    monkeypatch.setattr(controller.optimiser, "solve", count_plan)
+    resumed, state = compute_mpc_v2(inp, params, state, now=1020.0)
+    assert resumed is not None
+    assert plans == 1
+
+    compute_mpc_v2(inp, params, state, now=1030.0)
+    assert plans == 1
+
+
 def test_heating_disallowed_returns_none() -> None:
     """Disallowed heating returns no command."""
     out, _ = compute_mpc_v2(_baseline_input(heating_allowed=False), MpcV2Params(), None)

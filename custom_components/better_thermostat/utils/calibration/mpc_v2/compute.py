@@ -60,6 +60,12 @@ def compute_mpc_v2(
     if state.created_ts == 0.0:
         state.created_ts = now
 
+    if inp.window_open and state.controller is not None:
+        # Contact events still request a control cycle. The open cycle sends
+        # no MPC command, but the first close cycle must not reuse a plan made
+        # before the window was opened.
+        state.controller.replan_on_resume()
+
     if (
         inp.room_temperature is None
         or inp.target_temperature is None
