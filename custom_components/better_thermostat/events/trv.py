@@ -1038,6 +1038,14 @@ def convert_outbound_states(
                 _new_heating_setpoint = self.heat_target_temperature
             else:
                 _new_heating_setpoint = calculate_calibration_setpoint(self, entity_id)
+                if (
+                    _new_heating_setpoint is not None
+                    and _calibration_output == CalibrationOutput.DIRECT_VALVE_BASED
+                    and self.real_trvs[entity_id].capabilities().supports_valve_write
+                ):
+                    # Calibration still refreshes the valve intent, but the valve
+                    # command, not a synthetic setpoint, controls the heat output.
+                    _new_heating_setpoint = self.heat_target_temperature
             _new_local_calibration = None
 
         else:

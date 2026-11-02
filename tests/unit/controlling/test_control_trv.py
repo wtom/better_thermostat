@@ -19,7 +19,7 @@ import inspect
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
-from homeassistant.components.climate.const import PRESET_BOOST, HVACMode
+from homeassistant.components.climate.const import PRESET_BOOST, HVACAction, HVACMode
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, UnitOfTemperature
 from homeassistant.core import State
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -40,7 +40,7 @@ from custom_components.better_thermostat.core.recorder import FlightRecorder
 from custom_components.better_thermostat.core.snapshot import (
     parse_hvac_mode as _parse_mode,
 )
-from custom_components.better_thermostat.model_fixes import TRVZB, ZWA021
+from custom_components.better_thermostat.model_fixes import TRVZB, ZWA021, default
 from custom_components.better_thermostat.trv import Trv
 from custom_components.better_thermostat.utils.const import (
     CONF_HOMEMATICIP,
@@ -2087,6 +2087,83 @@ class TestBoostModeSafetyOverride:
             assert result is True
 
             assert [call[2] for call in set_valve_calls] == [0]
+
+
+class TestDirectValveTarget:
+    @pytest.mark.parametrize(
+        "calibration_mode",
+        [
+            CalibrationMode.MPC_CALIBRATION,
+            CalibrationMode.MPC_V2_CALIBRATION,
+            CalibrationMode.TPI_CALIBRATION,
+            CalibrationMode.PID_CALIBRATION,
+        ],
+    )
+    @pytest.mark.parametrize("percent", [0.0, 40.0])
+    @pytest.mark.parametrize("writable", [False, True])
+    @pytest.mark.parametrize("hvac_action", [HVACAction.HEATING, HVACAction.IDLE])
+    async def test_device_target_and_valve_command(
+        self,
+        calibration_mode: CalibrationMode,
+        percent: float,
+        writable: bool,
+        hvac_action: HVACAction,
+    ):
+        """Real calibration/remapping keeps the target only on a direct valve.
+
+        A missing valve channel must still use the synthetic setpoint fallback.
+        The controller must run before the setpoint is replaced.
+        """
+        trv = _default_trv_config(
+            current_temperature=20.0,
+            target_temp_step=0.5,
+            model_quirks=default,
+            advanced={
+                "calibration_mode": calibration_mode,
+                "calibration": CalibrationOutput.DIRECT_VALVE_BASED,
+            },
+        )
+        if writable:
+            _with_valve_channel(trv)
+        bt = _make_mock_self(
+            trv_state=HVACMode.HEAT,
+            trv_attrs={"temperature": 25.0},
+            real_trvs={"climate.trv1": trv},
+            hvac_action=hvac_action,
+        )
+        calibrator = Mock()
+        calibrator.cached.return_value = (percent, writable)
+
+        def observe(_snapshot, _now):
+            trv.calibration_balance = {
+                "valve_percent": percent,
+                "apply_valve": writable,
+                "debug": {},
+            }
+
+        calibrator.observe.side_effect = observe
+        with (
+            patch(
+                "custom_components.better_thermostat.calibration._balance_calibrator",
+                return_value=calibrator,
+            ),
+            patch(_PATCHES["set_valve"], autospec=True, return_value=True) as valve,
+            patch(_PATCHES["set_temperature"], autospec=True) as temperature,
+            patch(
+                _PATCHES["override_set_temperature"], autospec=True, return_value=False
+            ),
+            patch(_PATCHES["set_hvac_mode"], autospec=True),
+        ):
+            assert await control_trv(bt, "climate.trv1") is True
+
+        calibrator.observe.assert_called_once()
+        temperature.assert_awaited_once()
+        if writable:
+            assert temperature.call_args.args[2] == bt.heat_target_temperature
+            valve.assert_awaited_once_with(bt, "climate.trv1", int(percent))
+        else:
+            assert temperature.call_args.args[2] != bt.heat_target_temperature
+            valve.assert_not_awaited()
 
 
 class TestDirectValveOff:
