@@ -102,7 +102,10 @@ def test_window_close_replans_before_the_normal_mpc_interval(monkeypatch) -> Non
     assert plans == 1
 
 
-def test_setpoint_change_replans_with_the_same_controller(monkeypatch) -> None:
+@pytest.mark.parametrize("elapsed_s", [0.0, 0.2, 20.0])
+def test_setpoint_change_replans_with_the_same_controller(
+    monkeypatch, elapsed_s
+) -> None:
     """A small target step must not wait for the old plan or reset the room model."""
     inp = _baseline_input(target_temperature=21.0)
     params = MpcV2Params()
@@ -120,13 +123,18 @@ def test_setpoint_change_replans_with_the_same_controller(monkeypatch) -> None:
         plans += 1
         return original_solve(**kwargs)
 
+    covariance = controller.kalman.P.copy()
+    observer_stamp = controller._last_t_s
     monkeypatch.setattr(controller.optimiser, "solve", count_plan)
     changed, state = compute_mpc_v2(
-        replace(inp, target_temperature=21.1), params, state, now=1020.0
+        replace(inp, target_temperature=21.1), params, state, now=1000.0 + elapsed_s
     )
     assert changed is not None
     assert state.controller is controller
     assert plans == 1
+    if elapsed_s < MIN_STEP_DT_S:
+        np.testing.assert_array_equal(controller.kalman.P, covariance)
+        assert controller._last_t_s == observer_stamp
 
     compute_mpc_v2(replace(inp, target_temperature=21.1), params, state, now=1040.0)
     assert plans == 1
