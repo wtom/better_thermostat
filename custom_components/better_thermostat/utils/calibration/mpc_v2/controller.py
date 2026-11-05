@@ -295,23 +295,22 @@ class MpcV2Controller:
 
         self._forget_stamps_ahead_of_the_clock(t_s)
         dt_s = t_s - self._last_t_s if self._last_t_s > 0 else self.params.plant_step_s
-        if self._last_t_s > 0 and dt_s < MIN_STEP_DT_S:
-            # Stamps a second or more ahead of the clock are gone by now, so
-            # this sees only a repeat less than 1 s before or after the last
-            # cycle. It reuses the previous state and must NOT advance
-            # _last_t_s, otherwise a stale timestamp would reach dob.update.
-            return self._command_u, self._diagnostics()
-        self._last_t_s = t_s
+        repeated_sample = self._last_t_s > 0 and dt_s < MIN_STEP_DT_S
+        if repeated_sample:
+            # A target/contact change may request a new plan in the same
+            # sensor tick. Reuse the estimate without assimilating it twice,
+            # but honour the explicit replan request.
+            if self._next_mpc_t_s >= 0.0:
+                return self._command_u, self._diagnostics()
+            x_hat = self.kalman.x_hat.copy()
+        else:
+            self._last_t_s = t_s
 
-        # The observer follows real elapsed time.  The QP below intentionally
-        # remains on its fixed coarse planning grid; mixing those two time
-        # bases was the source of large artificial DOB excursions on sparse
-        # (typically five-minute) Home Assistant updates.
-        applied_u = self._last_u if heating_flow_available else 0.0
-        x_hat = self.kalman.update(T_room, applied_u, T_outdoor, dt_s=dt_s)
-        # The disturbance observer takes the share of the residual the filter
-        # moved its room estimate by, not the raw innovation.
-        self.dob.update(self.kalman.room_correction, dt_s)
+            # Only new samples advance the observers with real elapsed time.
+            # The optimiser below keeps its fixed coarse planning grid.
+            applied_u = self._last_u if heating_flow_available else 0.0
+            x_hat = self.kalman.update(T_room, applied_u, T_outdoor, dt_s=dt_s)
+            self.dob.update(self.kalman.room_correction, dt_s)
 
         if not heating_flow_available:
             # A DHW diverter disconnects the radiator circuit even if its
