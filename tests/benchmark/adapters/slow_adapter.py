@@ -28,6 +28,7 @@ class SlowCalibrationAdapter:
         self._response = dict(prior.get("response", {})) if prior else {}
         self._recovery_start: float | None = None
         self._start: float | None = None
+        self._window_context: BenchmarkContext | None = None
         self._temperature = 0.0
         self._sum_error = 0.0
         self._elapsed = 0.0
@@ -39,6 +40,7 @@ class SlowCalibrationAdapter:
 
     def _begin(self, ctx: BenchmarkContext) -> None:
         self._start = ctx.t
+        self._window_context = ctx
         self._temperature = ctx.room_temperature
         self._sum_error = 0.0
         self._elapsed = 0.0
@@ -59,6 +61,21 @@ class SlowCalibrationAdapter:
                 and abs(ctx.supply_temperature - previous.supply_temperature) >= 3.0
             )
         )
+        # Compare against the start of the held experiment as well as the
+        # preceding sample: small successive changes can otherwise hide a large
+        # supply/weather drift and teach the wrong valve response.
+        anchor = self._window_context
+        if anchor is not None:
+            changed = changed or (
+                abs(ctx.outdoor_temperature - anchor.outdoor_temperature) >= 3.0
+                or (ctx.supply_temperature is None)
+                != (anchor.supply_temperature is None)
+                or (
+                    ctx.supply_temperature is not None
+                    and anchor.supply_temperature is not None
+                    and abs(ctx.supply_temperature - anchor.supply_temperature) >= 3.0
+                )
+            )
         unavailable = (
             ctx.supply_temperature is not None
             and ctx.supply_temperature <= ctx.room_temperature

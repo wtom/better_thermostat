@@ -274,3 +274,37 @@ survives simulator restart with the baseline. Recovery duration is recorded
 separately: it is NOT a measured room time constant, dead time or post-heating
 response. No weather feed-forward or response-time inference is implemented yet.
 The record describes the opening that was actually held, not the next command.
+
+### Tuesday house-test target: 10 November 2026
+
+The user requests a bounded house test on Tuesday, not an immediate rollout.
+The date is a delivery target, not evidence that the controller is ready.
+
+- Saturday: harden observation validity; gradual supply/weather drift must not
+  masquerade as valve response. Compare with the beginning of each hold, not
+  only consecutive samples. A 3 K cumulative change restarts the experiment;
+  loss/return of supply telemetry also restarts it. These are provisional
+  simulation thresholds, not learned thermal parameters.
+- Sunday: implement and test room-response observations and conservative reuse
+  of context-matched holding points. Run multi-day learning, changing-weather,
+  sensor-delay/noise and recovery scenarios; report comfort and valve travel
+  separately rather than optimizing the composite score alone.
+- Monday: deliver a separately selectable BT mode using existing control/write,
+  persistence and diagnostics paths. Validate OFF, contacts, sensor loss,
+  restart, caps, recovery and multi-TRV distribution. Prepare exact install and
+  rollback revisions and an initial room choice from current measurements.
+- Tuesday: start with one single-radiator room only if simulation and integration
+  gates pass. Verify actual writes and echoes, then observe a full day/night
+  cycle before expanding. Other rooms retain their current controller.
+
+Trial gate: no known sustained unexplained comfort deficit, no normal rapid
+valve corrections, all existing safety/override paths preserved, inspectable
+held/recovery state and baseline, and a verified rollback. Before enabling,
+record numerical room-specific comfort/abort thresholds from sensor resolution
+and measured response; they are not yet validated. If these gates are not met,
+Tuesday may be an observation-only shadow test, not an unsafe actuator trial.
+Heating curve, pause pilot and independent bathroom floor control stay fixed.
+
+Iteration 3 adds three regressions for cumulative supply/weather drift and
+supply-telemetry loss. It does not yet implement response-time identification
+or context-dependent baseline reuse. A passing test is not live readiness.

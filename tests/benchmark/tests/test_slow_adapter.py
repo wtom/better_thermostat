@@ -143,3 +143,33 @@ def test_normal_window_records_response_at_applied_not_new_opening():
     restored = SlowCalibrationAdapter()
     restored.reset(state)
     assert restored.export_state() == state
+
+
+def test_gradual_supply_drift_cannot_be_learned_as_valve_response():
+    adapter = SlowCalibrationAdapter()
+    for t in range(0, 10801, 60):
+        result = adapter.step(context(t, supply_temperature=45 - 6 * t / 10800))
+    assert result.valve_percent == 40
+    assert adapter.export_state() == {"baseline": 40}
+    # A complete stable window is required after the final reset.
+    for t in range(10860, 21601, 60):
+        result = adapter.step(context(t, supply_temperature=39))
+    assert result.valve_percent == 43
+
+
+def test_gradual_weather_drift_restarts_normal_learning():
+    adapter = SlowCalibrationAdapter()
+    for t in range(0, 10801, 60):
+        result = adapter.step(
+            replace(context(t), outdoor_temperature=5 - 6 * t / 10800)
+        )
+    assert result.valve_percent == 40
+    assert adapter.export_state() == {"baseline": 40}
+
+
+def test_supply_sensor_loss_discards_incomplete_window():
+    adapter = SlowCalibrationAdapter()
+    adapter.step(context(supply_temperature=45))
+    result = adapter.step(context(10800, supply_temperature=None))
+    assert result.valve_percent == 40
+    assert adapter.export_state() == {"baseline": 40}
