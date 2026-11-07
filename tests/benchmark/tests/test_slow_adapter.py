@@ -173,3 +173,70 @@ def test_supply_sensor_loss_discards_incomplete_window():
     result = adapter.step(context(10800, supply_temperature=None))
     assert result.valve_percent == 40
     assert adapter.export_state() == {"baseline": 40}
+
+
+def test_settled_holding_point_survives_restart_and_is_reused_once():
+    adapter = SlowCalibrationAdapter()
+    adapter.step(context(room=21, supply_temperature=45))
+    adapter.step(context(10800, room=21, supply_temperature=45))
+    state = adapter.export_state()
+    assert state["holding_points"][0]["opening"] == 40
+    # A later context has changed the normal baseline, not the learned point.
+    state["baseline"] = 50
+    restored = SlowCalibrationAdapter()
+    restored.reset(state)
+    assert restored.step(context(room=21, supply_temperature=45)).valve_percent == 47
+    assert (
+        restored.step(context(60, room=21, supply_temperature=45)).valve_percent == 47
+    )
+    assert state["holding_points"][0]["opening"] == 40
+
+
+def test_holding_point_does_not_extrapolate_or_override_disturbances():
+    adapter = SlowCalibrationAdapter()
+    adapter.step(context(room=21, supply_temperature=45))
+    adapter.step(context(10800, room=21, supply_temperature=45))
+    state = adapter.export_state()
+    state["baseline"] = 50
+    variants = [
+        context(room=21, supply_temperature=None),
+        context(room=21, supply_temperature=49),
+        replace(context(room=21, supply_temperature=45), outdoor_temperature=8),
+        replace(context(room=21, supply_temperature=45), target_temperature=22),
+        context(room=21, supply_temperature=45, solar_intensity=0.5),
+    ]
+    for ctx in variants:
+        adapter.reset(state)
+        assert adapter.step(ctx).valve_percent == 50
+    adapter.reset(state)
+    assert (
+        adapter.step(
+            context(room=21, supply_temperature=45, window_open=True)
+        ).valve_percent
+        == 0
+    )
+
+
+def test_correcting_or_trending_windows_are_not_holding_points():
+    for final_room in (20.7, 21.19):
+        adapter = SlowCalibrationAdapter()
+        adapter.step(context(room=20.7, supply_temperature=45))
+        adapter.step(context(10800, room=final_room, supply_temperature=45))
+        assert "holding_points" not in adapter.export_state()
+
+
+def test_context_return_reuses_point_but_recovery_never_teaches_one():
+    adapter = SlowCalibrationAdapter()
+    adapter.step(context(room=21, supply_temperature=45))
+    adapter.step(context(10800, room=21, supply_temperature=45))
+    for t in range(10860, 21661, 60):
+        adapter.step(
+            replace(context(t, room=21.7, supply_temperature=45), target_temperature=22)
+        )
+    assert adapter.baseline == 43
+    result = adapter.step(context(21720, room=21, supply_temperature=45))
+    assert result.valve_percent == 40
+    assert result.diagnostics["reason"] == "reuse_holding_point"
+    adapter.step(context(21780, room=20, supply_temperature=45))
+    adapter.step(context(22380, room=20, supply_temperature=45))
+    assert len(adapter.export_state()["holding_points"]) == 1

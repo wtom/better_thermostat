@@ -308,3 +308,18 @@ Heating curve, pause pilot and independent bathroom floor control stay fixed.
 Iteration 3 adds three regressions for cumulative supply/weather drift and
 supply-telemetry loss. It does not yet implement response-time identification
 or context-dependent baseline reuse. A passing test is not live readiness.
+
+### Iteration 4: conservative context-matched holding points
+
+The simulation adapter retains up to 16 settled observations across restart.
+Only complete undisturbed holds with mean and final error within 0.2 K,
+absolute trend at most 0.05 K/h and available supply telemetry qualify.
+At restart or a detected context transition, the latest matching point may
+move the baseline by at most one normal step. Matching requires target within
+0.1 K, outdoor temperature within 1 K and supply within 2 K. Ordinary samples
+do not repeatedly apply the point. No interpolation or extrapolation occurs;
+recovery and disturbed windows cannot teach holding points. All thresholds are
+provisional simulation choices. Points have no age expiry yet; reuse is bounded
+but cannot distinguish changed hydraulics from old conditions. Response-time
+and radiator-afterheat identification remain open, as do multi-day validation
+and production integration. This is not a live candidate.

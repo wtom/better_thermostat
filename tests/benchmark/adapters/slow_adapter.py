@@ -1,7 +1,7 @@
 """Experimental sample-and-hold room calibration; simulation only.
 
 No production selection or device writes. All limits are provisional. Only the
-normal baseline survives restart; observation and recovery windows start fresh.
+normal baseline and settled holding points survive restart; observation and recovery windows start fresh.
 """
 
 from __future__ import annotations
@@ -26,6 +26,9 @@ class SlowCalibrationAdapter:
         """Restore the normal baseline, never a transient recovery command."""
         self.baseline = float(prior["baseline"]) if prior else None
         self._response = dict(prior.get("response", {})) if prior else {}
+        self._holding_points = (
+            [dict(point) for point in prior.get("holding_points", [])] if prior else []
+        )
         self._recovery_start: float | None = None
         self._start: float | None = None
         self._window_context: BenchmarkContext | None = None
@@ -87,7 +90,25 @@ class SlowCalibrationAdapter:
             self._exception_since = None
             self._recovery = None
             self._command = None
-        reason = "hold"
+        # Reuse only measured settled points, never recovery commands or an
+        # extrapolated weather model. Bound each context transition to one normal
+        # step so a stale point cannot bypass the slow-calibration contract.
+        reused = False
+        if (previous is None or changed) and not disturbed:
+            matches = [
+                point
+                for point in self._holding_points
+                if ctx.supply_temperature is not None
+                and abs(point["target_temperature"] - ctx.target_temperature) <= 0.1
+                and abs(point["outdoor_temperature"] - ctx.outdoor_temperature) <= 1.0
+                and abs(point["supply_temperature"] - ctx.supply_temperature) <= 2.0
+            ]
+            if matches:
+                point = matches[-1]
+                delta = point["opening"] - self.baseline
+                self.baseline += max(-self.step_percent, min(self.step_percent, delta))
+                reused = True
+        reason = "reuse_holding_point" if reused else "hold"
         command = self.baseline
         if disturbed:
             # A window closes the simulated actuator. Unavailable heat freezes
@@ -171,6 +192,22 @@ class SlowCalibrationAdapter:
                         "outdoor_temperature": ctx.outdoor_temperature,
                         "target_temperature": ctx.target_temperature,
                     }
+                    # Correcting windows describe response, not equilibrium.
+                    if (
+                        abs(mean_error) <= 0.2
+                        and abs(error) <= 0.2
+                        and abs(trend) <= 0.05
+                        and ctx.supply_temperature is not None
+                    ):
+                        self._holding_points.append(
+                            {
+                                "opening": self.baseline,
+                                "target_temperature": ctx.target_temperature,
+                                "outdoor_temperature": ctx.outdoor_temperature,
+                                "supply_temperature": ctx.supply_temperature,
+                            }
+                        )
+                        self._holding_points = self._holding_points[-16:]
                     # Project one hour ahead: do not add heat to an adequately
                     # warming room, nor remove it while it is cooling to target.
                     projected_error = error - trend
@@ -190,6 +227,7 @@ class SlowCalibrationAdapter:
                 "reason": reason,
                 "baseline": self.baseline,
                 "response": dict(self._response),
+                "holding_point_count": len(self._holding_points),
             },
         )
 
@@ -200,4 +238,6 @@ class SlowCalibrationAdapter:
         state = {"baseline": self.baseline}
         if self._response:
             state["response"] = dict(self._response)
+        if self._holding_points:
+            state["holding_points"] = [dict(point) for point in self._holding_points]
         return state
