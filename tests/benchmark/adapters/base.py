@@ -28,6 +28,7 @@ class BenchmarkContext:
     window_open: bool = False
     solar_intensity: float = 0.0  # 0.0 - 1.0
     last_valve_percent: float = 0.0
+    supply_temperature: float | None = None
 
 
 @dataclass(frozen=True)

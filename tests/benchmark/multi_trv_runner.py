@@ -117,6 +117,10 @@ class _MultiTrvFacade:
         # Single-radiator view = mean over the parallel radiators.
         return sum(self._plant.state.T_rads) / self._plant.params.n_trvs
 
+    @property
+    def supply_temperature(self) -> float:
+        return self._plant.params.T_water
+
     def apply(
         self, dt_s: float, valve_percent: float, T_outdoor: float, Q_K_per_min: float
     ) -> None:

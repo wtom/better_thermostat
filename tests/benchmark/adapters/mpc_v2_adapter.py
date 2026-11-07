@@ -79,6 +79,7 @@ class MpcV2Adapter:
             room_temperature=ctx.room_temperature,
             trv_temperature=ctx.trv_temperature,
             outdoor_temperature=ctx.outdoor_temperature,
+            supply_temperature=ctx.supply_temperature,
             window_open=ctx.window_open,
             heating_allowed=True,
             applied_valve_percent=ctx.last_valve_percent,

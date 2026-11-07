@@ -217,6 +217,11 @@ class PlantFacade(Protocol):
         """Single-radiator view of the plant (mean over radiators if multi-TRV), in °C."""
         ...
 
+    @property
+    def supply_temperature(self) -> float:
+        """Water supply temperature visible to the simulated sensor."""
+        ...
+
     def apply(
         self, dt_s: float, valve_percent: float, T_outdoor: float, Q_K_per_min: float
     ) -> None:
@@ -238,6 +243,10 @@ class _SingleTrvFacade:
     @property
     def T_rad(self) -> float:
         return self._plant.state.T_rad
+
+    @property
+    def supply_temperature(self) -> float:
+        return self._plant.params.T_water
 
     def apply(
         self, dt_s: float, valve_percent: float, T_outdoor: float, Q_K_per_min: float
@@ -335,6 +344,7 @@ def _drive_adapter(
             window_open=window_open,
             solar_intensity=controller_solar,
             last_valve_percent=last_valve_percent,
+            supply_temperature=facade.supply_temperature,
         )
 
         out = adapter.step(ctx)

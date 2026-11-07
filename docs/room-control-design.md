@@ -52,3 +52,36 @@ Keep tuning per room; do not hard-code the five main rooms as the control scope.
 
 Deployment support from Wolfgang is available if agent access is insufficient.
 No deployment is necessary for this design document.
+
+## Evaluation checkpoint 2026-11-07
+
+- Read-only live inventory captured all 10 BT room entities and 11 radiator
+  actuators (two in the living room), including bathroom, WC, kitchen,
+  hallway and heating cellar. All expose MPC v2 diagnostics. Bathroom
+  independent underfloor heating remains outside the actuator scope.
+- Repaired a benchmark input omission: simulated supply temperature now reaches
+  MPC v2 through both single- and multi-TRV drive paths. Before this patch the
+  controller kept its model supply default even on low-temperature plants.
+- Focused adapter/runner/multi-TRV tests: 117 passed. Entire benchmark test
+  directory: 434 passed. Ruff check and diff whitespace check passed.
+- Existing 37-scenario single-TRV comparison: MPC v2 overall 0.879 versus PID
+  0.783; supply-aware run 0.880 versus 0.783. These are synthetic composite
+  scores, not measured gas efficiency or deployment acceptance.
+- In the 30-scenario multi-TRV groups, PID wins in all three simulated plant
+  profiles. Baseline overall MPC/PID: symmetric 0.574/0.655, asymmetric
+  0.539/0.664, heterogeneous 0.576/0.684. Supply propagation does not change
+  these 65 C plants. Single-TRV ranking must not be generalized to groups.
+- Additional 30 low-supply runs compare PID, default MPC and MPC with a
+  2000-minute room prior at 35/45 C. Large deficits occur for all controllers
+  on some of these synthetic plants; they are not fitted home models and
+  do not establish the appropriate home heating curve. Changing only the
+  room time constant does not resolve these deficits.
+- Autoreview found no actionable issues in this benchmark patch; its filesystem
+  sandbox prevented repository inspection, so the review is bundle-only.
+
+Evidence is retained in workspace artifacts/heizung/room-control-20261107:
+inventory.json, baseline.txt, supply-aware.txt, live-prior-metrics.json,
+focused-tests.txt, benchmark-tests.txt and review-run.txt. The next regulator
+work must distinguish group model/distribution behavior from single-radiator
+tracking, then test changing supply and interruptions explicitly. No production
+controller, schedule, heating curve, window behavior or pause pilot was changed.

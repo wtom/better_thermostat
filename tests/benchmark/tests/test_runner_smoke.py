@@ -211,3 +211,37 @@ def test_open_window_closes_the_plant_valve_through_actuator_hysteresis():
     window = [ctx.window_open for ctx in adapter.seen]
     assert window == [False] * 5 + [True] * 5 + [False] * 6
     assert actuator.flows == [0.6] * 2 + [0.05] * 3 + [0.0] * 11
+
+
+@pytest.mark.parametrize("multi", [False, True])
+def test_runner_exposes_actual_supply_temperature(multi):
+    """Plant overrides must reach controllers on both simulator paths."""
+    seen = []
+
+    class SupplyProbe:
+        name = "supply_probe"
+        family = "valve"
+
+        def reset(self, prior=None):
+            pass
+
+        def step(self, ctx):
+            seen.append(ctx.supply_temperature)
+            return BenchmarkOutput(valve_percent=0.0)
+
+    scenario = replace(
+        S01_SETPOINT_STEP_SMALL, duration_minutes=1.0, stabilisation_min=0.0
+    )
+    if multi:
+        params = replace(PROFILE_MULTI_SYMMETRIC, T_water=37.0)
+        run_multi_trv_scenario(
+            SupplyProbe(),
+            scenario,
+            params,
+            MultiTrvPlantState(T_room=20.0, T_rads=[20.0] * params.n_trvs),
+        )
+    else:
+        run_scenario(
+            SupplyProbe(), scenario, plant_params=replace(scenario.plant, T_water=37.0)
+        )
+    assert seen and set(seen) == {37.0}

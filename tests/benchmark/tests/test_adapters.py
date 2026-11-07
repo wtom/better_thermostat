@@ -249,3 +249,11 @@ def test_mpc_v2_adapter_closes_the_valve_while_the_window_is_open():
     ctx = _ctx_at(0.0, target=22.0, current=18.0)
     out = adapter.step(replace(ctx, window_open=True, last_valve_percent=60.0))
     assert out.valve_percent == 0.0
+
+
+@pytest.mark.parametrize("supply", [35.0, 42.0, 65.0])
+def test_mpc_v2_uses_measured_supply(supply):
+    """Low-temperature comparisons must not run MPC on its 65 C default."""
+    adapter = MpcV2Adapter()
+    adapter.step(replace(_ctx(), supply_temperature=supply))
+    assert adapter._state.controller.params.plant.T_water == supply
