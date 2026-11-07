@@ -113,3 +113,103 @@ suites. Autoreview local returned clean, bundle-only (reviewer shell unavailable
 Evidence: workspace artifacts/heizung/room-control-20261107/group-comparison.json,
 dynamic-group.json, group-fix-tests.txt, group-fix-review.txt. Baseline/rollback:
 27d1e01f. The wider all-room control and heating-curve goal remains open.
+
+## Agreed direction: slow valve calibration and critical-room heating curve
+
+The preceding MPC work fixes a separate group-model defect. It is not the
+chosen architecture for this next experiment. The user explicitly prefers
+hours-long observation at fixed valve positions, small subsequent corrections,
+and earlier intervention only for significant cold/warm deviations. PID is
+not assumed adequate either.
+
+### 1. Specify observations and provisional limits
+
+Include all 10 BT rooms and their 11 existing radiator actuators. Respect the
+bathroom's independent floor-heating controller; do not add its actuators.
+Record room target, measured temperature and trend, actual valve writes/echoes,
+supply/outdoor temperatures, contact states, heating availability and schedule
+changes. Use room-level targets even for multiple radiators. Inspect individual
+radiator balancing separately: an existing temperature-boost distributor must
+not silently defeat a fixed-valve observation window.
+
+Initial simulation parameters, not agreed deployment settings: 2–3 h normal
+observation windows, 2–3 percentage-point valve corrections, +/-0.2 K room band,
+fast intervention at approximately +/-0.5 K sustained error or a clear trend
+that predicts crossing it. Calibrate these against real sensor resolution,
+noise and room response; fast close for genuine excessive warmth must remain
+possible. Not every room needs the same timescale.
+
+### 2. Build a room-level sample-and-hold calibration prototype
+
+Maintain an explicit chosen baseline opening and observation window per room.
+Start from a plausible previously applied opening, not an arbitrary full-open
+reset. Hold the value over the observation window. Use sustained error and
+trend together: no extra opening if the room is already warming adequately,
+and reduce ahead of afterheat overshoot. Once settled, make only one small
+correction, then observe again. Keep an accepted opening when it works.
+
+Separate exceptional recovery from normal calibration: a substantial deficit
+can request more opening promptly; excessive warmth can close promptly. Do
+not learn a normal baseline from that emergency interval. Target changes,
+windows, explicit circuit unavailability, substantial supply changes and
+solar disturbances invalidate or segment the observation. Burner off alone
+does not establish unavailable radiator heat. Persist accepted baselines and
+explain every intervention; neither endless hold nor rapid correction chatter
+is an acceptable fallback.
+
+### 3. Validate with the heating curve fixed
+
+Use existing single/multi-radiator simulations and recorded home conditions.
+Cover steady targets, cold start, small target steps, target drops, solar gain,
+window events, changing supply, heating interruptions and sensor noise/delay.
+Compare against the installed MPC and PID as references, not assumed winners.
+Report room error, time above/below the proposed band, peak deviations,
+recovery time, actual command changes/travel, and time at 0/100 percent.
+Reject a quiet controller if it merely leaves rooms persistently cold.
+Valve opening/integral is not measured gas consumption.
+
+### 4. Bounded live trial, then all rooms
+
+Add an explicitly selectable calibration mode in the BT fork; do not disguise
+it as MPC. Reuse existing write, OFF/contact, cap, persistence and diagnostic
+paths. Start with one single-radiator room, then the two-radiator living room;
+retain other rooms' working modes until the new mode passes the trial. Check
+actual successful writes/echoes as well as recommendations. Record exact
+install and rollback revisions. Observe for completed day/night cycles before
+expanding to all rooms. Do not change heating curve or pause pilot in this
+stage. Bathroom floor heating retains independent authority.
+
+### 5. Outer loop: lower the heating curve slowly
+
+After room calibration is stable, evaluate all rooms together. Lower supply in
+small bounded heating-curve steps only when all scheduled comfort targets are
+being met and heat reserve is present. During the following observation phase
+freeze normal valve-baseline learning (fast comfort protection remains active).
+Then allow room recalibration on the new supply level. Do not adjust both
+levels simultaneously. Require a long stable assessment after each change,
+initially at least a completed day; exclude warm-up, open windows, DHW and
+heating outages from evidence of inadequate curve temperature.
+
+The user's endpoint is explicit: the thermally limiting room holds its target
+with 100% valve opening, while other rooms hold theirs with smaller openings.
+This is sustained holding, not a transient target crossing. Re-evaluate which
+room is limiting as weather/targets change. If a normally used room remains
+below target with 100% opening and available heat, stop lowering and roll back
+the last curve reduction. A failed sensor, open window or defective radiator
+must be diagnosed rather than drive an unlimited whole-house curve increase.
+Slope versus offset changes must be based on outdoor-temperature evidence,
+not blindly changed together from one mild day's result.
+
+### 6. Acceptance and efficiency evidence
+
+Acceptance is stable room comfort at every room's own scheduled target, rare
+normal valve corrections, reliable exceptional recovery, and the lowest
+comfort-safe heating curve. Formal tolerance/duration limits remain to be
+chosen from measured room/sensor response. Compare gas per heating degree-hour
+(m3/degree-hour) across completed comparable windows; report both normalized
+values and their percentage difference, with room comfort and schedule changes
+separately. Do not claim savings from simulation or lower valve values alone.
+
+Next deliverable: a tested simulation prototype of the slow room calibration,
+with explicit provisional parameters and comparison report. No automatic
+heating-curve changes are authorized by this plan alone.
