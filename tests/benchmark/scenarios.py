@@ -695,7 +695,47 @@ S22_DIURNAL_OUTDOOR = ScenarioConfig(
 )
 
 
+# Dedicated slow-calibration probes: real closed-loop thermal evolution, not
+# replayed room temperatures. No oracle pre-warm; the controller starts cold.
+S39_SLOW_WEEK_RESTART = ScenarioConfig(
+    name="S39_slow_week_restart",
+    description="Seven-day RC3 hold with sensor lag/noise and restart on day three",
+    duration_minutes=7 * 24 * 60,
+    initial=InitialConditions(T_room=21.0, T_rad=21.0),
+    plant=PlantParams(
+        tau_room_min=70.0,
+        tau_rad_min=30.0,
+        gain_heater=2.0,
+        T_water=45.0,
+        tau_wall_min=1100.0,
+        valve_command_delay_s=120.0,
+    ),
+    setpoint_schedule=schedules.constant(21.0),
+    outdoor_schedule=schedules.constant(5.0),
+    sensor_params=SensorParams(noise_std_K=0.05, thermal_lag_s=90.0),
+    stabilisation_min=0.0,
+    controller_restart_t_s=3 * 24 * 3600.0,
+)
+
+S40_SLOW_WEEK_WEATHER = ScenarioConfig(
+    name="S40_slow_week_weather",
+    description="Seven-day RC3 slow-radiator test with daily weather and target drop",
+    duration_minutes=7 * 24 * 60,
+    initial=InitialConditions(T_room=21.0, T_rad=21.0),
+    plant=S39_SLOW_WEEK_RESTART.plant,
+    setpoint_schedule=schedules.step(4 * 24 * 3600.0, 21.0, 20.0),
+    outdoor_schedule=schedules.sinus_diurnal(
+        min_value=0.0, max_value=8.0, phase_min_h=0.0
+    ),
+    sensor_params=S39_SLOW_WEEK_RESTART.sensor_params,
+    stabilisation_min=0.0,
+    controller_restart_t_s=3 * 24 * 3600.0,
+)
+
+
 ALL_SCENARIOS: dict[str, ScenarioConfig] = {
+    S39_SLOW_WEEK_RESTART.name: S39_SLOW_WEEK_RESTART,
+    S40_SLOW_WEEK_WEATHER.name: S40_SLOW_WEEK_WEATHER,
     S01_SETPOINT_STEP_SMALL.name: S01_SETPOINT_STEP_SMALL,
     S02_SETPOINT_STEP_LARGE.name: S02_SETPOINT_STEP_LARGE,
     S03_FROST_TO_COMFORT.name: S03_FROST_TO_COMFORT,

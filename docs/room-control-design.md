@@ -323,3 +323,45 @@ provisional simulation choices. Points have no age expiry yet; reuse is bounded
 but cannot distinguish changed hydraulics from old conditions. Response-time
 and radiator-afterheat identification remain open, as do multi-day validation
 and production integration. This is not a live candidate.
+
+### Iteration 5: closed-loop thermal week, not input replay
+
+S39 and S40 add RC3 wall mass (1100 min), slow radiator (30 min), 120 s
+transport delay, 45 °C supply, 90 s sensor lag and 0.05 K sensor noise.
+Both start with room AND radiator at 21 °C, a zero-opening cold controller,
+no oracle warm-up, and a controller-only restart after 72 hours. S39 holds
+21 °C/5 °C outdoor; S40 cycles outdoor 0–8 °C daily and drops target from
+21 to 20 °C after 96 hours. A plant regression verifies that closing a hot
+radiator does not erase its stored heat: the room continues warming.
+
+Measured 7-day experiment (30 s steps, exact physical 604800 s):
+
+| Scenario / controller | Day 1 RMSE (K) | Day 7 RMSE (K) | Day 7 max under / over (K) | Day 7 valve travel (percentage points) |
+| --- | ---: | ---: | ---: | ---: |
+| S39 slow | 0.363 | 0.185 | 0.207 / 0.304 | 6 |
+| S39 PID | 0.208 | 0.264 | 0.561 / 0.396 | 4143 |
+| S40 slow | 0.365 | 0.338 | 0.580 / 0.616 | 150 |
+| S40 PID | 0.229 | 0.266 | 0.597 / 0.472 | 4025 |
+
+These are model results, not house measurements or gas savings. The valve
+travel proxy is summed absolute requested opening changes, not physical motor
+travel. It excludes each day's boundary transition. The PID benchmark uses its
+existing simplified filtering/slope path, not a full production HA replay.
+The deterministic sensor seed depends on scenario name; each controller within
+a scenario sees the same noise generation, but not the same room trajectory.
+
+S39 shows useful settling with quiet actuation and no evident restart collapse;
+S40 still gives worse tracking RMSE than PID and repeated comfort interventions.
+Cold-start maximum undershoot is 0.776 K (S39) / 0.815 K (S40). This is not a
+live-ready result. Weather-dependent equilibrium learning and separating delayed
+response/afterheat from true heat deficit remain the next implementation work.
+No response time constant has been identified by this experiment.
+
+Reproduction: the workspace artifact `artifacts/heizung/slow-stage5-20261107/`
+contains `run.py` and raw daily `results.json`. From this checkout run
+`PYTHONPATH=. uv run python <artifact-directory>/run.py`. It deliberately uses
+`_drive_adapter` with exact seven-day duration; the general benchmark CLI's
+`run_scenario` automatically extends nominal durations for slow plants. Running
+S39/S40 through that CLI therefore does NOT reproduce these exact seven-day
+numbers (the scenario duration is nominal there). Neither route warms the
+plant with oracle control for these two scenarios.
