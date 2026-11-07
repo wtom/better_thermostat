@@ -35,6 +35,7 @@ from .adapters.passive_modes import (
     NoCalibrationAdapter,
 )
 from .adapters.pid_adapter import PidAdapter
+from .adapters.slow_adapter import SlowCalibrationAdapter
 from .adapters.tpi_adapter import TpiAdapter
 from .metrics import MetricValues, TimeSeries, compute_metrics
 from .plant import (
@@ -73,6 +74,7 @@ ADAPTER_FACTORIES: dict[str, Callable[[], ControllerAdapter]] = {
     "mpc_v2": MpcV2Adapter,
     "tpi": TpiAdapter,
     "pid": PidAdapter,
+    "slow": SlowCalibrationAdapter,  # Experimental, benchmark-only.
     "heating_power": HeatingPowerAdapter,
     # BT's offset-family modes: no smart controller, TRV-internal P-loop only.
     "default": DefaultCalibrationAdapter,

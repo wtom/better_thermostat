@@ -1,6 +1,6 @@
 # Room control and low-temperature heating: development brief
 
-Status: design only; no new controller implemented or deployed.
+Status: experimental simulation prototype implemented; no new production controller deployed.
 
 ## Goal
 
@@ -213,3 +213,48 @@ separately. Do not claim savings from simulation or lower valve values alone.
 Next deliverable: a tested simulation prototype of the slow room calibration,
 with explicit provisional parameters and comparison report. No automatic
 heating-curve changes are authorized by this plan alone.
+
+## Implementation checkpoint: first simulation prototype
+
+`tests/benchmark/adapters/slow_adapter.py` implements the first experimental
+sample-and-hold path. Select it with `uv run python -m tests.benchmark.runner
+--controller slow --controller pid --controller mpc_v2`. It is benchmark-only:
+no new production calibration choice, actuator writes, or heating-curve changes.
+
+Provisional behaviour: hold 3 hours; normal corrections 3 percentage points;
+use mean error and an hour-ahead trend projection. Sustained 0.5 K deviations
+trigger separate recovery after 10 minutes, with opening increments at most
+once per 15 minutes or closure for excessive warmth. Recovery does not train
+the normal baseline. Window, solar and supply disturbances restart observation;
+only baseline opening persists across adapter restarts.
+
+Eight behavioural tests and the full benchmark suite (443 tests) pass. The
+37-scenario single-radiator composite score is 0.600 for the prototype versus
+0.783 PID and 0.880 MPC v2. These synthetic scores are not gas measurements.
+The prototype is NOT suitable for live rollout. In particular, recovery can
+repeat around a poor retained baseline: fixed small steps alone do not yet
+identify an adequate operating point. Missing forecast-based early protection,
+room-specific response learning and multi-radiator validation remain open.
+The benchmark starts from its actual last command (initially zero), not an
+invented optimally fitted opening. This cold-start limitation is part of the
+first result, not grounds to tune against hidden plant truth.
+
+### Adaptive balancing research direction
+
+Homematic IP's published Fraunhofer IEE summary describes adaptive flow
+reduction in over-supplied rooms; this supports the principle, not a claim of
+access to their implementation. Reference:
+https://homematic-ip.com/sites/default/files/downloads/IEE-Bericht153-242-2020-0530-dynamisch-adaptiver-abgleich-_Zusammenfassung.pdf
+
+Learn each room's approximate holding opening conditional on available supply
+and weather, delay before a command has measurable effect, incremental response
+and radiator afterheat. Learn from ordinary stable operation, excluding known
+disturbances. Do not equate valve percentage with flow or heat output. Keep
+multiple radiators under one room target; individual distribution and changing
+hydraulic interactions require separate validation. This is a proposed next
+iteration, not a tested identification algorithm or certified hydraulic balance.
+
+Closeout: autoreview `--mode local` returned clean after fixing discarded
+observation intervals leaking into a new window (regression test included).
+The reviewer could inspect only the supplied bundle because its shell sandbox
+was unavailable. Ruff check/format and diff whitespace checks pass.
