@@ -124,7 +124,7 @@ class TestStrategyRegistry:
             return percent, use_valve
 
         return build_strategy_registry(
-            compute_mpc, compute_mpc_v2, compute_tpi, compute_pid
+            compute_mpc, compute_mpc_v2, compute_tpi, compute_pid, compute_pid
         )
 
     def test_modes_are_covered(self):
@@ -135,6 +135,7 @@ class TestStrategyRegistry:
             CalibrationMode.MPC_V2_CALIBRATION,
             CalibrationMode.TPI_CALIBRATION,
             CalibrationMode.PID_CALIBRATION,
+            CalibrationMode.SLOW_CALIBRATION,
         }
 
     @pytest.mark.parametrize(
@@ -144,6 +145,7 @@ class TestStrategyRegistry:
             CalibrationMode.MPC_V2_CALIBRATION,
             CalibrationMode.TPI_CALIBRATION,
             CalibrationMode.PID_CALIBRATION,
+            CalibrationMode.SLOW_CALIBRATION,
         ],
     )
     def test_run_extracts_the_percent(self, mode):
@@ -168,6 +170,7 @@ class TestStrategyRegistry:
             lambda bt, e: (None, False),
             lambda bt, e: (None, False),
             lambda bt, e: (None, False),
+            lambda bt, e: (None, True),
             lambda bt, e: (None, True),
         )
         bt = ThermostatStandIn()
@@ -251,6 +254,7 @@ class TestBalanceCalibrator:
                 MagicMock(spec=TpiOutput, duty_cycle_percent=percent),
                 use_valve,
             ),
+            lambda bt, e: (percent, use_valve),
             lambda bt, e: (percent, use_valve),
         )
         bt = ThermostatStandIn()

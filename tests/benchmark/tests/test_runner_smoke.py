@@ -220,17 +220,20 @@ def test_runner_exposes_actual_supply_temperature(multi):
 
     class SupplyProbe:
         name = "supply_probe"
-        family = "valve"
+        family: ControllerFamily = "valve"
 
         def reset(self, prior=None):
             pass
+
+        def export_state(self) -> dict[str, Any]:
+            return {}
 
         def step(self, ctx):
             seen.append(ctx.supply_temperature)
             return BenchmarkOutput(valve_percent=0.0)
 
     scenario = replace(
-        S01_SETPOINT_STEP_SMALL, duration_minutes=1.0, stabilisation_min=0.0
+        S01_SETPOINT_STEP_SMALL, duration_minutes=1, stabilisation_min=0.0
     )
     if multi:
         params = replace(PROFILE_MULTI_SYMMETRIC, T_water=37.0)

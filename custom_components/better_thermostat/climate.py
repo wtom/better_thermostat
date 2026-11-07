@@ -3269,6 +3269,7 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
                     CalibrationMode.DEFAULT,
                     CalibrationMode.MPC_CALIBRATION,
                     CalibrationMode.MPC_V2_CALIBRATION,
+                    CalibrationMode.SLOW_CALIBRATION,
                     CalibrationMode.TPI_CALIBRATION,
                     CalibrationMode.PID_CALIBRATION,
                 ):

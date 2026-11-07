@@ -296,9 +296,15 @@ def build_strategy_registry(
     compute_mpc_v2_balance: ComputeBalance,
     compute_tpi_balance: ComputeBalance,
     compute_pid_balance: ComputeBalance,
+    compute_slow_balance: ComputeBalance,
 ) -> dict[CalibrationMode, BalanceStrategy]:
     """Build the mode-to-strategy registry from the balance callables."""
     return {
+        CalibrationMode.SLOW_CALIBRATION: BalanceStrategy(
+            mode=CalibrationMode.SLOW_CALIBRATION,
+            compute=compute_slow_balance,
+            percent_of=_percent_of_pid,
+        ),
         CalibrationMode.MPC_CALIBRATION: BalanceStrategy(
             mode=CalibrationMode.MPC_CALIBRATION,
             compute=compute_mpc_balance,

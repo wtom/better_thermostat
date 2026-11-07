@@ -176,6 +176,7 @@ _CALIBRATION_MODE_CHOICES: tuple[CalibrationMode, ...] = (
     CalibrationMode.DEFAULT,
     CalibrationMode.MPC_CALIBRATION,
     CalibrationMode.MPC_V2_CALIBRATION,
+    CalibrationMode.SLOW_CALIBRATION,
     CalibrationMode.AGGRESSIVE_CALIBRATION,
     CalibrationMode.TPI_CALIBRATION,
     CalibrationMode.PID_CALIBRATION,
@@ -1370,6 +1371,43 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 homematic=ctx.homematic,
                 has_auto=ctx.has_auto,
             )
+            slow = (
+                advanced_data[CONF_CALIBRATION_MODE] == CalibrationMode.SLOW_CALIBRATION
+            )
+            invalid_output = slow and (
+                advanced_data[CONF_CALIBRATION] != CalibrationOutput.DIRECT_VALVE_BASED
+                or not ctx.info.get("support_valve", False)
+            )
+            modes = [
+                advanced_data[CONF_CALIBRATION_MODE]
+                if index == self.i
+                else configured_calibration_mode(item.stored_advanced())
+                for index, item in enumerate(self.trv_bundle)
+            ]
+            mixed_room = (
+                self.i == len(self.trv_bundle) - 1
+                and CalibrationMode.SLOW_CALIBRATION in modes
+                and any(mode != CalibrationMode.SLOW_CALIBRATION for mode in modes)
+            )
+            if invalid_output or mixed_room:
+                return self.async_show_form(
+                    step_id="advanced",
+                    data_schema=vol.Schema(
+                        _build_advanced_fields(
+                            sources=(user_input, existing_adv),
+                            default_calibration=ctx.default_calibration,
+                            homematic=ctx.homematic,
+                            has_auto=ctx.has_auto,
+                            support_valve=ctx.info.get("support_valve", False),
+                            support_offset=ctx.info.get("support_offset", False),
+                        )
+                    ),
+                    errors={"base": "slow_requires_direct_room"},
+                    description_placeholders={
+                        "trv": ctx.entity_id or "-",
+                        "docs_url": CONFIG_WALKTHROUGH_URL,
+                    },
+                )
             _LOGGER.debug(
                 "ConfigFlow advanced step storing data for %s (index %s): %s",
                 trv.entity_id,
@@ -1554,6 +1592,43 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 homematic=ctx.homematic,
                 has_auto=ctx.has_auto,
             )
+            slow = (
+                advanced_data[CONF_CALIBRATION_MODE] == CalibrationMode.SLOW_CALIBRATION
+            )
+            invalid_output = slow and (
+                advanced_data[CONF_CALIBRATION] != CalibrationOutput.DIRECT_VALVE_BASED
+                or not ctx.info.get("support_valve", False)
+            )
+            modes = [
+                advanced_data[CONF_CALIBRATION_MODE]
+                if index == self.i
+                else configured_calibration_mode(item.stored_advanced())
+                for index, item in enumerate(self.trv_bundle)
+            ]
+            mixed_room = (
+                self.i == len(self.trv_bundle) - 1
+                and CalibrationMode.SLOW_CALIBRATION in modes
+                and any(mode != CalibrationMode.SLOW_CALIBRATION for mode in modes)
+            )
+            if invalid_output or mixed_room:
+                return self.async_show_form(
+                    step_id="advanced",
+                    data_schema=vol.Schema(
+                        _build_advanced_fields(
+                            sources=(user_input, existing_adv),
+                            default_calibration=ctx.default_calibration,
+                            homematic=ctx.homematic,
+                            has_auto=ctx.has_auto,
+                            support_valve=ctx.info.get("support_valve", False),
+                            support_offset=ctx.info.get("support_offset", False),
+                        )
+                    ),
+                    errors={"base": "slow_requires_direct_room"},
+                    description_placeholders={
+                        "trv": ctx.entity_id or "-",
+                        "docs_url": CONFIG_WALKTHROUGH_URL,
+                    },
+                )
             _LOGGER.debug(
                 "OptionsFlow advanced step storing data for %s (index %s): %s",
                 trv.entity_id,

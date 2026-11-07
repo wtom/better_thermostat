@@ -206,9 +206,7 @@ def compute_mpc_v2(
     if _LOGGER.isEnabledFor(logging.DEBUG):
         _LOGGER.debug(
             "better_thermostat %s: MPC v2 (%s) target=%.2f current=%.2f trv=%s "
-            "outdoor=%s -> valve=%d%% (T_rad_hat=%.2f D_hat=%.4f tau_room=%.0f) "
-            "planning_D=%.6f integral=%.4f governed_target=%s supply=%s "
-            "flow_available=%s cap=%s key=%s",
+            "outdoor=%s -> valve=%d%% (T_rad_hat=%.2f D_hat=%.4f tau_room=%.0f) key=%s",
             inp.bt_name or "BT",
             inp.entity_id or inp.key,
             inp.target_temperature,
@@ -219,12 +217,6 @@ def compute_mpc_v2(
             diag.T_rad_hat,
             diag.D_hat_K_per_min,
             diag.tau_room_min,
-            state.controller.dob.planning_rate,
-            state.controller.optimiser.e_integral_K_min,
-            state.controller.governor.state(),
-            inp.supply_temperature,
-            inp.heating_flow_available,
-            cap_percent,
             inp.key,
         )
 

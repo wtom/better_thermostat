@@ -54,6 +54,7 @@ from custom_components.better_thermostat.utils.calibration.pid import (
     sanitize_pid_state,
     settle_pid_cycle,
 )
+from custom_components.better_thermostat.utils.calibration.slow import SlowContext
 from custom_components.better_thermostat.utils.calibration.strategies import (
     BalanceCalibrator,
     BalanceStrategy,
@@ -881,10 +882,6 @@ def _compute_mpc_v2_balance(
             heat_loss_rate=self.heat_loss_rate,
             preset=None if preset == MpcV2PlantPreset.AUTO else preset.value,
         )
-    # The group command is applied to each parallel radiator, not divided
-    # between them. Their heat transfers to the room add up; the radiator
-    # response (gain/tau_rad) still describes one representative radiator.
-    plant_prior.coupling_rad_room *= len(self.real_trvs)
     v2_params = MpcV2Params(plant=plant_prior)
 
     outdoor_temperature = _get_current_outdoor_temperature(self)
@@ -1226,11 +1223,108 @@ def _compute_pid_balance(
     return percent, supports_valve
 
 
+def _compute_slow_balance(
+    self: BetterThermostat, entity_id: str
+) -> tuple[float | None, bool]:
+    """Hold one room opening without MPC or temperature-based redistribution.
+
+    Experimental direct-valve mode: every radiator in the room must opt in.
+    Existing kernel gates and actuator writers remain authoritative.
+    """
+    trv = self.real_trvs[entity_id]
+    trv.calibration_balance = None
+    manager = self.state_mgr
+    if manager is None:
+        return None, False
+    key = f"{resolve_unique_id(self)}:group:slow"
+    controller = manager.get_slow_live(key)
+    room = effective_room_temperature(self)
+    target = self.heat_target_temperature
+    compatible = all(
+        configured_calibration_mode(item.advanced) == CalibrationMode.SLOW_CALIBRATION
+        and _supports_direct_valve_control(self, eid)
+        for eid, item in self.real_trvs.items()
+    )
+    if (
+        not compatible
+        or room is None
+        or target is None
+        or not all(math.isfinite(value) for value in (room, target))
+    ):
+        controller.interrupt()
+        return None, False
+    # OFF/contact and sensor fallback are not observations of the room model.
+    if (
+        self.bt_hvac_mode == HVACMode.OFF
+        or self.contact_open
+        or self.kernel_state.control_mode.mode != ControlMode.OPTIMAL
+    ):
+        controller.interrupt()
+        return None, False
+    openings = [_confirmed_valve_percent(item) for item in self.real_trvs.values()]
+    confirmed = [value for value in openings if value is not None]
+    initial = sum(confirmed) / len(confirmed) if confirmed else 0.0
+    maximum = min(_get_trv_max_opening(self, eid) for eid in self.real_trvs)
+    # Learning describes the actually held opening. Missing/unequal feedback,
+    # actuator caps and external overrides discard the observation window.
+    controller.observe_applied(self.clock.monotonic(), openings)
+    if controller.baseline is not None and controller.baseline > maximum:
+        controller.baseline = maximum
+        controller.interrupt()
+    supply = _get_mpc_v2_supply_temperature(self)
+    flow = _mpc_v2_heating_flow_available(self)
+    # These are existing sensor settings, not a call into the MPC algorithm.
+    if not flow or (self.mpc_v2_supply_sensor_entity_id is not None and supply is None):
+        controller.interrupt()
+        percent = (
+            0.0
+            if room >= target + 0.5
+            else min(
+                maximum,
+                controller.baseline if controller.baseline is not None else initial,
+            )
+        )
+        debug = {"reason": "heat_unavailable", "baseline": controller.baseline}
+    else:
+        _, solar = _get_solar_context(self)
+        result = controller.step(
+            SlowContext(
+                t=self.clock.monotonic(),
+                target_temperature=target,
+                room_temperature=room,
+                outdoor_temperature=_get_current_outdoor_temperature(self) or 0.0,
+                last_valve_percent=min(maximum, initial),
+                supply_temperature=supply,
+                solar_intensity=solar,
+            )
+        )
+        percent = min(maximum, result.valve_percent)
+        debug = result.diagnostics
+        if controller.baseline is not None and controller.baseline > maximum:
+            controller.baseline = maximum
+            controller.interrupt()
+            debug = {**debug, "baseline": maximum, "reason": "cap_hold"}
+    manager.set_slow_live(key, controller)
+    trv.calibration_balance = {
+        "valve_percent": percent,
+        "apply_valve": True,
+        "debug": {
+            **debug,
+            "mode": "slow",
+            "experimental": True,
+            "group_valve_percent": percent,
+        },
+    }
+    self.schedule_save_state()
+    return percent, True
+
+
 BALANCE_STRATEGIES = build_strategy_registry(
     _compute_mpc_balance,
     _compute_mpc_v2_balance,
     _compute_tpi_balance,
     _compute_pid_balance,
+    _compute_slow_balance,
 )
 
 
@@ -1284,6 +1378,11 @@ MODE_TRAITS: dict[CalibrationMode, ModeTraits] = {
     ),
     CalibrationMode.MPC_CALIBRATION: ModeTraits(
         balance=BALANCE_STRATEGIES[CalibrationMode.MPC_CALIBRATION],
+        skip_post_adjustments=True,
+    ),
+    CalibrationMode.SLOW_CALIBRATION: ModeTraits(
+        balance=BALANCE_STRATEGIES[CalibrationMode.SLOW_CALIBRATION],
+        uses_tolerance_band=False,
         skip_post_adjustments=True,
     ),
     CalibrationMode.MPC_V2_CALIBRATION: ModeTraits(

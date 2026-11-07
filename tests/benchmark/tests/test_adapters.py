@@ -256,4 +256,5 @@ def test_mpc_v2_uses_measured_supply(supply):
     """Low-temperature comparisons must not run MPC on its 65 C default."""
     adapter = MpcV2Adapter()
     adapter.step(replace(_ctx(), supply_temperature=supply))
+    assert adapter._state.controller is not None
     assert adapter._state.controller.params.plant.T_water == supply

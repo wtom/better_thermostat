@@ -12,7 +12,6 @@ from typing import Any
 from unittest.mock import MagicMock
 
 from homeassistant.components.climate.const import HVACMode
-import pytest
 
 from custom_components.better_thermostat.calibration import _compute_mpc_v2_balance
 from custom_components.better_thermostat.core.clock import FakeClock
@@ -471,24 +470,3 @@ def test_a_late_position_report_does_not_revert_the_written_opening(
 
     assert second is not None
     assert second.valve_percent == first.valve_percent
-
-
-@pytest.mark.parametrize("count", [1, 2, 3])
-def test_group_prior_adds_parallel_room_coupling(count) -> None:
-    """One group command heats through all radiators, with unchanged response."""
-    trvs = {
-        f"climate.trv_{i}": _make_trv(
-            f"climate.trv_{i}", current_temperature=20.0, supports_valve=True
-        )
-        for i in range(count)
-    }
-    bt = _make_bt(real_trvs=trvs)
-    for entity_id in reversed(trvs):
-        _compute_mpc_v2_balance(bt, entity_id)
-    states = bt.state_mgr._mpc_v2_live
-    assert len(states) == 1
-    controller = next(iter(states.values())).controller
-    assert controller is not None
-    assert controller.params.plant.coupling_rad_room == count
-    assert controller.params.plant.gain_heater == 2.0
-    assert controller.params.plant.tau_rad_min == 15.0

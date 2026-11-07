@@ -1229,3 +1229,22 @@ async def test_each_thermostat_of_a_room_gets_its_own_advanced_step(hass):
         TRV_ID,
         SPARE_TRV_ID,
     ]
+
+
+async def test_slow_mode_requires_writable_direct_valve_output(hass):
+    """A slow experiment cannot silently become setpoint calibration."""
+    set_room_sensor(hass, 19.0)
+    (trv,) = await build_devices(hass, GENERIC_HEAT_TRV)
+    form = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    form = await hass.config_entries.flow.async_configure(
+        form["flow_id"], _user_step_input(trv.entity_id)
+    )
+    form = await hass.config_entries.flow.async_configure(
+        form["flow_id"],
+        {
+            CONF_CALIBRATION_MODE: CalibrationMode.SLOW_CALIBRATION,
+            CONF_CALIBRATION: CalibrationOutput.TARGET_TEMP_BASED,
+        },
+    )
+    assert form["step_id"] == "advanced"
+    assert form["errors"] == {"base": "slow_requires_direct_room"}

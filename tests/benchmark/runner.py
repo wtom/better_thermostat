@@ -74,7 +74,7 @@ ADAPTER_FACTORIES: dict[str, Callable[[], ControllerAdapter]] = {
     "mpc_v2": MpcV2Adapter,
     "tpi": TpiAdapter,
     "pid": PidAdapter,
-    "slow": SlowCalibrationAdapter,  # Experimental, benchmark-only.
+    "slow": SlowCalibrationAdapter,  # Experimental production controller.
     "heating_power": HeatingPowerAdapter,
     # BT's offset-family modes: no smart controller, TRV-internal P-loop only.
     "default": DefaultCalibrationAdapter,

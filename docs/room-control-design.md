@@ -1,6 +1,6 @@
 # Room control and low-temperature heating: development brief
 
-Status: experimental simulation prototype implemented; no new production controller deployed.
+Status: independent experimental production mode integrated and tested; no controller deployed to the house. See iteration 8 for current status.
 
 ## Goal
 
@@ -423,3 +423,87 @@ At t=573600 s, 10800 s later, the room is warm again (20.455 C); this is not
 an immediate reset-induced reopening. A second completion at t=578280 s is
 likewise inside the band (20.168 C). The remaining issue is rebound under the
 resumed holding opening, not a demonstrated weather-triggered cancellation.
+
+## Iteration 8 — independent production integration (7 November)
+
+The selectable **Slow valve calibration (experimental)** mode now uses
+`utils/calibration/slow.py`; the benchmark is a thin adapter over that same
+controller. It does not run MPC, Kalman filtering, a QP or PID. The `v2` branch
+is the integration base, not the chosen controller. Earlier production MPC
+changes were removed from this PR's net diff; the preceding sections are a
+historical research log, not a description of changes still shipped here.
+
+The mode requires direct valve control on **every** radiator of a room.
+Mixed calibration modes and non-valve outputs are rejected in the configuration
+flow. One shared baseline drives all room radiators, bounded by the lowest
+configured cap; no temperature-dependent MPC distributor changes the held
+opening. A room's existing OFF/contact/kernel safety and actuator write paths
+remain in charge. Bathroom floor heating is outside this integration.
+
+Accepted learning is persisted under its own `slow` Store section. Restart,
+OFF/contact, sensor fallback and observation gaps longer than 15 minutes discard
+active windows. Unconfirmed or different actuator feedback cannot count as a
+held baseline experiment. Feedback still requires live verification: successful
+adapter writes and device-reported position are not proof of hydraulic flow.
+Configured supply/DHW inputs reuse the existing sensor settings (their internal
+names still contain `mpc_v2`); they do not invoke MPC. Solar classification
+invalidates learning but no longer disables warm-room protection.
+
+A measured 30-minute trend can begin warm recovery before a predicted +0.5 K
+excursion: current excess must exceed 0.2 K, warming at least 0.1 K/h predicts
++0.5 K within 30 minutes, and the condition must persist for 10 minutes.
+Normal corrections remain 3 percentage points after 3 hours. These constants
+remain experimental, not tuned per-house deployment settings.
+
+Exact seven-day S39/S40 reruns, using the same 30-second simulation step as the
+previous runs, give last-day results:
+
+| Scenario/controller | RMSE K | max under/over K | valve travel pp |
+| --- | ---: | ---: | ---: |
+| S39 slow | 0.185 | 0.207 / 0.304 | 6 |
+| S39 PID | 0.264 | 0.561 / 0.396 | 4143 |
+| S40 slow | 0.300 | 0.583 / 0.516 | 170 |
+| S40 PID | 0.266 | 0.597 / 0.472 | 4025 |
+
+The warmer-weather case improves from the prior slow RMSE 0.338 K but still
+misses a strict +/-0.5 K envelope and is not superior to PID on RMSE. A tested
+alternative (waiting until target before exiting warm recovery) worsened peaks
+and was rejected. No valve-travel number is a gas-consumption estimate.
+Artifacts: workspace `artifacts/heizung/slow-stage8-20261107/`.
+
+### Tuesday 10 November: bounded test and rollback
+
+1. Before any deployment, record the exact candidate commit from PR #11 and the
+   **actually installed** BT version/commit, save the installed component and
+   relevant HA configuration/Store backup, and verify the backup is readable.
+   Do not assume that the fork's `v2` head equals the installed revision.
+2. Keep heating curve, schedules, demand-pause automation and bathroom unchanged.
+   Start with one single-radiator room. Keep all other rooms on their current
+   modes. Do not change several control variables together.
+3. Confirm configuration shows `slow_calibration` and direct valve output. Record
+   target/room temperature, the `slow_calibration` entity attribute (baseline, reason, trend),
+   requested percentage, successful writes and device echoes. Check OFF and
+   window closure before unattended observation. Never infer delivery from a
+   diagnostic recommendation alone.
+4. Observe a full day/night cycle. Stop the pilot if an occupied room remains
+   more than 0.5 K cold for 30 minutes despite available heat, if excess exceeds
+   0.5 K and the valve does not close, if writes/echoes diverge, or if controller
+   state is non-finite/unavailable. Investigate recovery and supply separately.
+   The simulated weather envelope is not yet a blanket live-comfort acceptance.
+5. Roll back the selected room to its recorded prior calibration mode first.
+   If the integration itself is faulty, restore the exact backed-up component
+   and restart HA; restore the configuration/Store backup if needed. Verify the
+   prior mode and actual writes after rollback. Never remove the whole HA Store.
+6. Only after a successful single-room cycle test the two-radiator living room,
+   with both heads selected together. No all-room rollout or heating-curve
+   reduction is implied by this PR. If deployment prerequisites or actuator
+   checks are missing, Tuesday remains an observation/replay test, not actuation.
+
+No production device or HA configuration was changed while preparing this code.
+
+
+Closeout checks also cover recovery feedback: after one minute of write/echo
+allowance, a divergent or missing recovery echo invalidates its learning without
+cancelling comfort control. Natural cooling after a failed close cannot teach a
+lower baseline. The `slow_calibration` live attribute is excluded from Recorder,
+like existing controller diagnostics; explicitly collect it during a pilot.

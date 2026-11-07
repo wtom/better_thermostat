@@ -63,6 +63,7 @@ from .calibration.mpc_v2.reid import ReidBuffer
 from .calibration.mpc_v2.state import MpcV2Payload
 from .calibration.mpc_v2_internals.plant import GAIN_HEATER_BOUNDS, TAU_ROOM_BOUNDS_MIN
 from .calibration.pid import PIDState
+from .calibration.slow import SlowCalibration, SlowState
 from .calibration.tpi import TpiState
 from .const import (
     DOMAIN,
@@ -209,6 +210,7 @@ class RuntimeState:
     mpc: dict[str, MpcState] = field(default_factory=dict)
     mpc_v2: dict[str, MpcV2StateData] = field(default_factory=dict)
     mpc_v2_reid: dict[str, MpcV2ReidData] = field(default_factory=dict)
+    slow: dict[str, SlowState] = field(default_factory=dict)
     pid: dict[str, PIDState] = field(default_factory=dict)
     tpi: dict[str, TpiState] = field(default_factory=dict)
     thermal: ThermalStats = field(default_factory=ThermalStats)
@@ -398,6 +400,13 @@ def write_filters(filters: FilterState) -> StoredFilterState:
     }
 
 
+def _slow_calibration_state(data: Mapping[str, object]) -> SlowState:
+    """Copy and validate the restart-safe slow-controller payload."""
+    controller = SlowCalibration()
+    controller.reset(data)
+    return controller.export_state()
+
+
 def _serialize(state: RuntimeState) -> StoredRuntimeState:
     """Return the payload the Store writes for *state*.
 
@@ -410,6 +419,9 @@ def _serialize(state: RuntimeState) -> StoredRuntimeState:
         "mpc_v2": {key: write_mpc_v2_state(data) for key, data in state.mpc_v2.items()},
         "mpc_v2_reid": {
             key: write_mpc_v2_reid(data) for key, data in state.mpc_v2_reid.items()
+        },
+        "slow": {
+            key: _slow_calibration_state(data) for key, data in state.slow.items()
         },
         "pid": {key: write_pid_state(pid) for key, pid in state.pid.items()},
         "tpi": {key: write_tpi_state(tpi) for key, tpi in state.tpi.items()},
@@ -1211,6 +1223,9 @@ def _deserialize(
         if reid is not None:
             state.mpc_v2_reid[key] = reid
 
+    for key, entry in _stored_entries(raw, "slow", poisoned):
+        state.slow[key] = _slow_calibration_state(dict(entry))
+
     for key, entry in _stored_entries(raw, "pid", poisoned):
         state.pid[key] = deserialize_pid(entry, key=key, poisoned=poisoned)
 
@@ -1419,6 +1434,7 @@ class StateManager:
         self._state = RuntimeState()
         # Live MPC v2 controllers, held in memory across cycles. The persisted
         # ``_state.mpc_v2`` snapshots are folded in only at save time.
+        self._slow_live: dict[str, SlowCalibration] = {}
         self._mpc_v2_live: dict[str, MpcV2State] = {}
         # Re-identification sample buffers and scheduling flags, in-memory only.
         self._mpc_v2_reid_live: dict[str, MpcV2ReidRuntime] = {}
@@ -1490,6 +1506,20 @@ class StateManager:
     def set_mpc(self, key: str, mpc: MpcState) -> None:
         """Set MPC state for a key and mark dirty."""
         self._state.mpc[key] = mpc
+        self._dirty = True
+
+    def get_slow_live(self, key: str) -> SlowCalibration:
+        """Return the room controller, restoring only validated learning."""
+        if key not in self._slow_live:
+            controller = SlowCalibration()
+            controller.reset(self._state.slow.get(key))
+            self._slow_live[key] = controller
+        return self._slow_live[key]
+
+    def set_slow_live(self, key: str, controller: SlowCalibration) -> None:
+        """Save learning via the existing throttled Store lifecycle."""
+        self._slow_live[key] = controller
+        self._state.slow[key] = controller.export_state()
         self._dirty = True
 
     def get_mpc_v2_live(
@@ -1660,6 +1690,8 @@ class StateManager:
             move(self._state.mpc)
             + move(self._state.mpc_v2)
             + move(self._state.mpc_v2_reid)
+            + move(self._state.slow)
+            + move(self._slow_live)
             + move(self._state.pid)
             + move(self._state.tpi)
             + move(self._mpc_v2_live)
@@ -1697,6 +1729,8 @@ class StateManager:
             forget(self._state.mpc)
             + forget(self._state.mpc_v2)
             + forget(self._state.mpc_v2_reid)
+            + forget(self._state.slow)
+            + forget(self._slow_live)
             + forget(self._state.pid)
             + forget(self._state.tpi)
             + forget(self._mpc_v2_live)
