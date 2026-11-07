@@ -398,3 +398,28 @@ baseline while the reported room remains 0.455 K above target (t=573600 s).
 Context transitions can end an intervention before entry into the comfort band;
 separating evidence invalidation from comfort-command cancellation should be
 examined next. These are simulator observations, not inferred house behaviour.
+
+### Iteration 7: separate evidence resets from comfort cancellation
+
+Weather/supply changes now discard the observation window and recent trend
+without cancelling an active comfort intervention. Target changes, windows,
+solar disturbances and unavailable heat still cancel it. A recovery spanning
+an environmental change cannot teach a baseline correction when it completes.
+Regression checks cover warm closure, cold command continuity, invalidated
+learning, and explicit cancellation conditions. Restart semantics are unchanged.
+
+All 460 benchmark tests pass. Repeating the exact seven-day experiment leaves
+both S39 and S40 day-7 metrics unchanged from iteration 6. Thus this is a local
+contract fix, NOT evidence that the observed S40 reopening was caused by an
+environment reset. That earlier causal hypothesis is not confirmed. The next
+trace must distinguish actual comfort-band completion and subsequent afterheat
+from context cancellation before changing the controller further. Reproduction
+artifacts: workspace `artifacts/heizung/slow-stage7-20261107/`.
+
+The full transition trace corrects the earlier abbreviated interpretation:
+at t=562800 s S40 is back inside the +0.2 K band (20.189 C at target 20 C),
+so warm recovery completes normally and baseline drops from 27 to 24 percent.
+At t=573600 s, 10800 s later, the room is warm again (20.455 C); this is not
+an immediate reset-induced reopening. A second completion at t=578280 s is
+likewise inside the band (20.168 C). The remaining issue is rebound under the
+resumed holding opening, not a demonstrated weather-triggered cancellation.

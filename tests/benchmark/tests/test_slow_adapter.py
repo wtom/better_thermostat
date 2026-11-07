@@ -265,3 +265,52 @@ def test_target_change_and_restart_discard_recent_response():
     restored = SlowCalibrationAdapter()
     restored.reset(adapter.export_state())
     assert restored.step(context(1620)).diagnostics["recent_trend_k_per_h"] is None
+
+
+def test_weather_and_supply_changes_do_not_reopen_warm_recovery():
+    for changes in ({"outdoor_temperature": 9}, {"supply_temperature": 39}):
+        adapter = SlowCalibrationAdapter()
+        adapter.step(context(room=21.7, supply_temperature=45))
+        assert (
+            adapter.step(context(600, room=21.7, supply_temperature=45)).valve_percent
+            == 0
+        )
+        ctx = replace(context(660, room=21.45, supply_temperature=45), **changes)
+        result = adapter.step(ctx)
+        assert result.valve_percent == 0
+        assert result.diagnostics["reason"] == "recovery_warm"
+        assert (
+            adapter.step(replace(ctx, t=720, room_temperature=21.3)).valve_percent == 0
+        )
+        result = adapter.step(replace(ctx, t=780, room_temperature=21.1))
+        assert result.valve_percent == 40
+        assert adapter.export_state() == {"baseline": 40}
+
+
+def test_environment_drift_preserves_cold_command_without_learning_it():
+    adapter = SlowCalibrationAdapter()
+    adapter.step(context(room=20, supply_temperature=45))
+    assert (
+        adapter.step(context(600, room=20, supply_temperature=45)).valve_percent == 50
+    )
+    ctx = replace(context(660, room=20.6, supply_temperature=45), outdoor_temperature=9)
+    assert adapter.step(ctx).valve_percent == 50
+    assert adapter.step(replace(ctx, t=720, room_temperature=20.9)).valve_percent == 40
+    assert adapter.export_state() == {"baseline": 40}
+
+
+def test_target_and_disturbances_still_cancel_warm_recovery():
+    for changes, expected in (
+        ({"target_temperature": 22}, 40),
+        ({"window_open": True}, 0),
+        ({"supply_temperature": 19}, 40),
+        ({"solar_intensity": 0.5}, 40),
+    ):
+        adapter = SlowCalibrationAdapter()
+        adapter.step(context(room=21.7, supply_temperature=45))
+        adapter.step(context(600, room=21.7, supply_temperature=45))
+        result = adapter.step(
+            replace(context(660, room=21.45, supply_temperature=45), **changes)
+        )
+        assert result.valve_percent == expected
+        assert result.diagnostics["reason"] != "recovery_warm"

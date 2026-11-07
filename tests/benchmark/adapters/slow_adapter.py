@@ -32,6 +32,7 @@ class SlowCalibrationAdapter:
         )
         self._recent_temperatures: deque[tuple[float, float]] = deque()
         self._recovery_start: float | None = None
+        self._recovery_context_changed = False
         self._start: float | None = None
         self._window_context: BenchmarkContext | None = None
         self._temperature = 0.0
@@ -87,11 +88,20 @@ class SlowCalibrationAdapter:
         )
         disturbed = ctx.window_open or unavailable or ctx.solar_intensity >= 0.2
         self._previous = ctx
+        # Weather/supply drift invalidates learning, not an active comfort
+        # command. Target changes and disturbances still cancel that command.
+        cancel_recovery = disturbed or (
+            previous is not None
+            and ctx.target_temperature != previous.target_temperature
+        )
+        if changed and self._recovery:
+            self._recovery_context_changed = True
         if self._start is None or changed or disturbed:
             self._begin(ctx)
             self._exception_since = None
-            self._recovery = None
-            self._command = None
+            if cancel_recovery or self._recovery is None:
+                self._recovery = None
+                self._command = None
         if changed or disturbed:
             self._recent_temperatures.clear()
         self._recent_temperatures.append((ctx.t, ctx.room_temperature))
@@ -141,12 +151,11 @@ class SlowCalibrationAdapter:
             if self._recovery and (
                 (self._recovery == "cold" and error <= 0.2)
                 or (self._recovery == "warm" and error >= -0.2)
-                or changed
             ):
                 # A completed comfort intervention is directional evidence,
                 # not a measurement of the steady opening. Move only one normal
                 # calibration step; never persist the transient recovery value.
-                if not changed:
+                if not self._recovery_context_changed:
                     delta = (
                         self.step_percent
                         if self._recovery == "cold"
@@ -176,6 +185,7 @@ class SlowCalibrationAdapter:
                 if self._recovery != direction:
                     self._last_recovery_step = float("-inf")
                     self._recovery_start = ctx.t
+                    self._recovery_context_changed = False
                 self._recovery = direction
             if self._recovery:
                 approaching = (
