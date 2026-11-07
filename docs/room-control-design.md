@@ -85,3 +85,31 @@ focused-tests.txt, benchmark-tests.txt and review-run.txt. The next regulator
 work must distinguish group model/distribution behavior from single-radiator
 tracking, then test changing supply and interruptions explicitly. No production
 controller, schedule, heating curve, window behavior or pause pilot was changed.
+
+## Group-model fix checkpoint
+
+The group command is applied to every radiator. The fallback prior now sums
+room coupling across the configured radiators while retaining the response of
+one representative radiator (gain and radiator time constant unchanged).
+Single-radiator priors are unchanged. This is a count-based prior, not a fitted
+hydraulic model for unequal radiator sizes. The benchmark group factory mirrors
+this prior without reading actual simulated gains or coupling strengths.
+
+Across 30 scenarios per profile, mean tracking RMSE changes from 0.716 to
+0.636 K (symmetric), 0.738 to 0.632 K (asymmetric), and 0.720 to 0.640 K
+(heterogeneous). Mean peak overshoot changes from 1.067/1.130/1.074 K to
+0.571/0.641/0.565 K; mean valve travel falls from 2084/2001/2203 to
+270/298/312 percentage points. Mean peak deficits worsen by 0.16–0.19 K,
+although integrated deficits improve across these scenario sets.
+
+A separate 12-hour synthetic test steps supply 45→35→45 C and disconnects
+heating for one hour. With two radiators, overshoot falls 0.123→0.034 K and
+travel 608→336 points, but integrated deficit rises 2.880→3.004 K h and
+RMSE 0.481→0.498 K. Three radiators show a similar deficit tradeoff. One
+radiator is exactly unchanged. No gas-saving or all-room comfort claim follows.
+
+Validation: 833 passed, 2 expected xfails in MPC-v2, sensor-fallback and benchmark
+suites. Autoreview local returned clean, bundle-only (reviewer shell unavailable).
+Evidence: workspace artifacts/heizung/room-control-20261107/group-comparison.json,
+dynamic-group.json, group-fix-tests.txt, group-fix-review.txt. Baseline/rollback:
+27d1e01f. The wider all-room control and heating-curve goal remains open.

@@ -53,6 +53,19 @@ def make_multi_trv_adapter(
     """
     from .runner import _make_adapter
 
+    if name == "mpc_v2":
+        from custom_components.better_thermostat.utils.calibration.mpc_v2 import (
+            MpcV2Params,
+            make_plant_prior,
+        )
+
+        from .adapters.mpc_v2_adapter import MpcV2Adapter
+
+        # Match the production group prior, without leaking simulated gains
+        # or couplings into the controller.
+        prior = make_plant_prior()
+        prior.coupling_rad_room *= plant_params.n_trvs
+        return MpcV2Adapter(MpcV2Params(plant=prior))
     return _make_adapter(name, _equivalent_single_plant(plant_params))
 
 

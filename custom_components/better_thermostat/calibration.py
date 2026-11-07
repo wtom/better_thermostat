@@ -881,6 +881,10 @@ def _compute_mpc_v2_balance(
             heat_loss_rate=self.heat_loss_rate,
             preset=None if preset == MpcV2PlantPreset.AUTO else preset.value,
         )
+    # The group command is applied to each parallel radiator, not divided
+    # between them. Their heat transfers to the room add up; the radiator
+    # response (gain/tau_rad) still describes one representative radiator.
+    plant_prior.coupling_rad_room *= len(self.real_trvs)
     v2_params = MpcV2Params(plant=plant_prior)
 
     outdoor_temperature = _get_current_outdoor_temperature(self)
