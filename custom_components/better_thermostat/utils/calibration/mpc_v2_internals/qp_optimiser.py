@@ -362,6 +362,22 @@ class QpOptimiser:
             self.plant.hottest_radiator_temperature(T_sp),
         )
         u_ss = self._steady_input_for(T_sp, T_outdoor, D_hat_K_per_min)
+        _LOGGER.debug(
+            "MPC v2 plan: target=%.3f outdoor=%.3f supply=%.3f "
+            "planning_D=%.6f integral=%.4f steady_u=%.4f applied_u=%.4f "
+            "cap=%.4f step_s=%.1f horizon=%d w_smooth=%.3f",
+            T_sp,
+            T_outdoor,
+            self.plant.params.T_water,
+            D_hat_K_per_min,
+            self.e_integral_K_min,
+            u_ss,
+            u_last,
+            u_max,
+            self.params.step_s,
+            N,
+            self.params.w_smooth,
+        )
         A, B, d_vec = self.plant.linearised_system(T_outdoor, radiator_operating_point)
         d_vec = d_vec + np.array([D_hat_K_per_min * self.plant.dt_min, 0.0])
 

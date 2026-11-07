@@ -1658,3 +1658,22 @@ def test_a_prior_change_before_the_first_cycle_seeds_from_the_measurement() -> N
     assert state.controller is not None
     assert state.controller.plant_fine.params.tau_room_min == after.plant.tau_room_min
     assert float(state.controller.kalman.x_hat[0]) == pytest.approx(16.0, abs=0.05)
+
+
+def test_planning_diagnostics_do_not_change_control(caplog) -> None:
+    """Debug collection preserves the command and full controller state."""
+    params = MpcV2Params()
+    inp = _baseline_input()
+    normal, normal_state = compute_mpc_v2(inp, params, now=1000.0)
+    with caplog.at_level(logging.DEBUG):
+        logged, logged_state = compute_mpc_v2(inp, params, now=1000.0)
+    assert normal == logged
+    assert (
+        normal_state.controller.export_snapshot()
+        == logged_state.controller.export_snapshot()
+    )
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("planning_D=" in message and "key=" in message for message in messages)
+    assert any(
+        "steady_u=" in message and "w_smooth=" in message for message in messages
+    )
