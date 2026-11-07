@@ -45,8 +45,8 @@ def test_recovery_is_sustained_rate_limited_and_not_persisted():
     assert adapter.step(context(660, room=20)).valve_percent == 50
     assert adapter.step(context(1500, room=20)).valve_percent == 60
     assert adapter.export_state() == {"baseline": 40}
-    assert adapter.step(context(1560, room=20.9)).valve_percent == 40
-    assert adapter.step(context(1600)).valve_percent == 40
+    assert adapter.step(context(1560, room=20.9)).valve_percent == 43
+    assert adapter.step(context(1600)).valve_percent == 43
 
 
 def test_warm_recovery_closes_and_restart_restores_baseline():
@@ -97,3 +97,49 @@ def test_target_change_discards_preceding_interval_from_mean():
     for t in range(100060, 110801, 60):
         result = adapter.step(replace(context(t, room=20.8), target_temperature=21.1))
     assert result.valve_percent == 43
+
+
+def test_approaching_target_holds_recovery_instead_of_adding_heat():
+    adapter = SlowCalibrationAdapter()
+    adapter.step(context(room=20))
+    adapter.step(context(600, room=20))
+    assert adapter.step(context(1500, room=20.6)).valve_percent == 50
+    assert adapter.export_state() == {"baseline": 40}
+
+
+def test_recovery_completion_learns_only_one_small_step():
+    adapter = SlowCalibrationAdapter()
+    adapter.step(context(room=20))
+    adapter.step(context(600, room=20))
+    adapter.step(context(1500, room=20))
+    adapter.step(context(2400, room=20))
+    assert adapter.step(context(2460, room=20.9)).valve_percent == 43
+    state = adapter.export_state()
+    assert state["baseline"] == 43
+    assert state["response"]["last_recovery_s"] == 1860
+    restored = SlowCalibrationAdapter()
+    restored.reset(state)
+    assert restored.step(context()).valve_percent == 43
+
+
+def test_changed_target_does_not_teach_recovery_direction():
+    adapter = SlowCalibrationAdapter()
+    adapter.step(context(room=20))
+    adapter.step(context(600, room=20))
+    result = adapter.step(replace(context(660, room=20), target_temperature=20))
+    assert result.valve_percent == 40
+    assert adapter.export_state() == {"baseline": 40}
+
+
+def test_normal_window_records_response_at_applied_not_new_opening():
+    adapter = SlowCalibrationAdapter()
+    for t in range(0, 10801, 60):
+        adapter.step(context(t))
+    state = adapter.export_state()
+    assert state["baseline"] == 43
+    assert state["response"]["observed_opening"] == 40
+    assert state["response"]["trend_k_per_h"] == 0
+    assert state["response"]["window_s"] == 10800
+    restored = SlowCalibrationAdapter()
+    restored.reset(state)
+    assert restored.export_state() == state

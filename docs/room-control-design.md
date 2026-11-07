@@ -258,3 +258,19 @@ Closeout: autoreview `--mode local` returned clean after fixing discarded
 observation intervals leaking into a new window (regression test included).
 The reviewer could inspect only the supplied bundle because its shell sandbox
 was unavailable. Ruff check/format and diff whitespace checks pass.
+
+### Iteration 2: bounded recovery feedback and observation record
+
+Simulation only. On completing an undisturbed comfort intervention, move the
+normal baseline by one calibration step (3 percentage points), not to the
+transient recovery opening. Target/window/supply/solar changes discard the
+intervention rather than training from it. Cold recovery holds its command
+while approaching target instead of increasing it every 15 minutes regardless
+of the remaining deficit.
+
+Each completed normal hold window records applied opening, mean error,
+temperature trend, duration, target, outdoor and supply temperature. This record
+survives simulator restart with the baseline. Recovery duration is recorded
+separately: it is NOT a measured room time constant, dead time or post-heating
+response. No weather feed-forward or response-time inference is implemented yet.
+The record describes the opening that was actually held, not the next command.

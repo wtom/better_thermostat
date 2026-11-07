@@ -25,6 +25,8 @@ class SlowCalibrationAdapter:
     def reset(self, prior: dict[str, Any] | None = None) -> None:
         """Restore the normal baseline, never a transient recovery command."""
         self.baseline = float(prior["baseline"]) if prior else None
+        self._response = dict(prior.get("response", {})) if prior else {}
+        self._recovery_start: float | None = None
         self._start: float | None = None
         self._temperature = 0.0
         self._sum_error = 0.0
@@ -84,6 +86,18 @@ class SlowCalibrationAdapter:
                 or (self._recovery == "warm" and error >= -0.2)
                 or changed
             ):
+                # A completed comfort intervention is directional evidence,
+                # not a measurement of the steady opening. Move only one normal
+                # calibration step; never persist the transient recovery value.
+                if not changed:
+                    delta = (
+                        self.step_percent
+                        if self._recovery == "cold"
+                        else -self.step_percent
+                    )
+                    self.baseline = max(0.0, min(100.0, self.baseline + delta))
+                    command = self.baseline
+                    self._response["last_recovery_s"] = ctx.t - self._recovery_start
                 self._recovery = None
                 self._command = None
                 self._begin(ctx)
@@ -104,9 +118,13 @@ class SlowCalibrationAdapter:
             ):
                 if self._recovery != direction:
                     self._last_recovery_step = float("-inf")
+                    self._recovery_start = ctx.t
                 self._recovery = direction
             if self._recovery:
-                if ctx.t - self._last_recovery_step >= 900.0:
+                if (
+                    direction == self._recovery
+                    and ctx.t - self._last_recovery_step >= 900.0
+                ):
                     opening = (
                         self._command if self._command is not None else self.baseline
                     )
@@ -126,6 +144,16 @@ class SlowCalibrationAdapter:
                 if age >= self.hold_s and self._elapsed > 0.0:
                     mean_error = self._sum_error / self._elapsed
                     trend = (ctx.room_temperature - self._temperature) / (age / 3600)
+                    self._response = {
+                        **self._response,
+                        "observed_opening": self.baseline,
+                        "mean_error": mean_error,
+                        "trend_k_per_h": trend,
+                        "window_s": age,
+                        "supply_temperature": ctx.supply_temperature,
+                        "outdoor_temperature": ctx.outdoor_temperature,
+                        "target_temperature": ctx.target_temperature,
+                    }
                     # Project one hour ahead: do not add heat to an adequately
                     # warming room, nor remove it while it is cooling to target.
                     projected_error = error - trend
@@ -141,9 +169,18 @@ class SlowCalibrationAdapter:
                     self._begin(ctx)
         return BenchmarkOutput(
             valve_percent=command,
-            diagnostics={"reason": reason, "baseline": self.baseline},
+            diagnostics={
+                "reason": reason,
+                "baseline": self.baseline,
+                "response": dict(self._response),
+            },
         )
 
     def export_state(self) -> dict[str, Any]:
         """Persist only the normal room opening, not temporary recovery."""
-        return {"baseline": self.baseline} if self.baseline is not None else {}
+        if self.baseline is None:
+            return {}
+        state = {"baseline": self.baseline}
+        if self._response:
+            state["response"] = dict(self._response)
+        return state
