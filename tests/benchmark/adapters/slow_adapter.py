@@ -6,6 +6,7 @@ normal baseline and settled holding points survive restart; observation and reco
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 
 from .base import BenchmarkContext, BenchmarkOutput, ControllerFamily
@@ -29,6 +30,7 @@ class SlowCalibrationAdapter:
         self._holding_points = (
             [dict(point) for point in prior.get("holding_points", [])] if prior else []
         )
+        self._recent_temperatures: deque[tuple[float, float]] = deque()
         self._recovery_start: float | None = None
         self._start: float | None = None
         self._window_context: BenchmarkContext | None = None
@@ -90,6 +92,23 @@ class SlowCalibrationAdapter:
             self._exception_since = None
             self._recovery = None
             self._command = None
+        if changed or disturbed:
+            self._recent_temperatures.clear()
+        self._recent_temperatures.append((ctx.t, ctx.room_temperature))
+        while self._recent_temperatures[0][0] < ctx.t - 1800.0:
+            self._recent_temperatures.popleft()
+        recent_trend = None
+        samples = self._recent_temperatures
+        if len(samples) >= 3 and ctx.t - samples[0][0] >= 900.0:
+            # Measured trend guard, not an identified thermal time constant.
+            mean_t = sum(t - ctx.t for t, _ in samples) / len(samples)
+            mean_room = sum(room for _, room in samples) / len(samples)
+            denominator = sum((t - ctx.t - mean_t) ** 2 for t, _ in samples)
+            recent_trend = (
+                3600
+                * sum((t - ctx.t - mean_t) * (room - mean_room) for t, room in samples)
+                / denominator
+            )
         # Reuse only measured settled points, never recovery commands or an
         # extrapolated weather model. Bound each context transition to one normal
         # step so a stale point cannot bypass the slow-calibration contract.
@@ -159,8 +178,16 @@ class SlowCalibrationAdapter:
                     self._recovery_start = ctx.t
                 self._recovery = direction
             if self._recovery:
+                approaching = (
+                    self._recovery == "cold"
+                    and self._command is not None
+                    and recent_trend is not None
+                    and recent_trend > 0.0
+                    and error - recent_trend <= 0.2
+                )
                 if (
-                    direction == self._recovery
+                    not approaching
+                    and direction == self._recovery
                     and ctx.t - self._last_recovery_step >= 900.0
                 ):
                     opening = (
@@ -171,7 +198,11 @@ class SlowCalibrationAdapter:
                     )
                     self._last_recovery_step = ctx.t
                 command = self._command
-                reason = f"recovery_{self._recovery}"
+                reason = (
+                    "recovery_wait_response"
+                    if approaching
+                    else f"recovery_{self._recovery}"
+                )
                 self._begin(ctx)  # recovery is never baseline-learning evidence
             else:
                 # Do not carry discarded pre-reset time into this window.
@@ -226,6 +257,7 @@ class SlowCalibrationAdapter:
             diagnostics={
                 "reason": reason,
                 "baseline": self.baseline,
+                "recent_trend_k_per_h": recent_trend,
                 "response": dict(self._response),
                 "holding_point_count": len(self._holding_points),
             },

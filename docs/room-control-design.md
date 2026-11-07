@@ -365,3 +365,36 @@ contains `run.py` and raw daily `results.json`. From this checkout run
 S39/S40 through that CLI therefore does NOT reproduce these exact seven-day
 numbers (the scenario duration is nominal there). Neither route warms the
 plant with oracle control for these two scenarios.
+
+### Iteration 6: measured trend guard during cold recovery
+
+The simulation adapter now fits a least-squares room-temperature trend over
+at most 30 minutes, requiring at least three samples spanning 15 minutes.
+After the first cold recovery command, further opening increments wait if
+that measured warming trend projects entry into the 0.2 K target band within
+one hour. Stalled warming permits escalation again. Context disturbances and
+restart discard the trend; it is neither persisted nor claimed to identify a
+room time constant. First intervention and warm closure remain unchanged.
+The projection and windows are provisional, not fitted house parameters.
+
+Focused regressions cover still-cold but warming recovery, renewed escalation
+when warming stalls, and trend invalidation on target change/restart. Existing
+window, missing heat, learning and persistence tests remain in force.
+
+Repeating the exact iteration-5 seven-day experiment gives effectively the
+same day-7 S39 result (RMSE 0.185 K; 6 percentage points travel), and identical
+S40 results (RMSE 0.338 K; under/over 0.580/0.616 K; 150 points travel).
+This guard addresses a local recovery escalation case but DOES NOT solve the
+weather-tracking gap; no improved weekly comfort or gas efficiency is claimed.
+The reproducible runner and outputs are in workspace artifact
+`artifacts/heizung/slow-stage6-20261107/`. Production integration and bounded
+live readiness remain pending. Next inspect the actual S40 recovery/context
+transitions and holding-baseline evolution before adding further learning.
+
+The S40 transition trace narrows the next investigation: on day 7 the normal
+baseline moves 21 -> 24 -> 27 -> 24 -> 21 percent. Warm recoveries request zero
+at t=561540 and 577020 s; between them the controller returns to a 24-percent
+baseline while the reported room remains 0.455 K above target (t=573600 s).
+Context transitions can end an intervention before entry into the comfort band;
+separating evidence invalidation from comfort-command cancellation should be
+examined next. These are simulator observations, not inferred house behaviour.

@@ -240,3 +240,28 @@ def test_context_return_reuses_point_but_recovery_never_teaches_one():
     adapter.step(context(21780, room=20, supply_temperature=45))
     adapter.step(context(22380, room=20, supply_temperature=45))
     assert len(adapter.export_state()["holding_points"]) == 1
+
+
+def test_cold_recovery_waits_for_observed_warming_then_resumes_if_stalled():
+    adapter = SlowCalibrationAdapter()
+    for t in range(0, 1501, 60):
+        # Still >0.5 K cold, but warming fast enough to reach the band in an hour.
+        result = adapter.step(context(t, room=20 + 0.4 * t / 1500))
+    assert result.valve_percent == 50
+    assert result.diagnostics["reason"] == "recovery_wait_response"
+    assert result.diagnostics["recent_trend_k_per_h"] > 0.9
+    assert adapter.export_state() == {"baseline": 40}
+    for t in range(1560, 3361, 60):
+        result = adapter.step(context(t, room=20.4))
+    assert result.valve_percent > 50  # no endless wait after warming stops
+
+
+def test_target_change_and_restart_discard_recent_response():
+    adapter = SlowCalibrationAdapter()
+    for t in range(0, 1501, 60):
+        adapter.step(context(t, room=20 + 0.4 * t / 1500))
+    result = adapter.step(replace(context(1560, room=20.4), target_temperature=22))
+    assert result.diagnostics["recent_trend_k_per_h"] is None
+    restored = SlowCalibrationAdapter()
+    restored.reset(adapter.export_state())
+    assert restored.step(context(1620)).diagnostics["recent_trend_k_per_h"] is None
