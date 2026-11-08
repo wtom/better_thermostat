@@ -99,6 +99,7 @@ class SlowCalibration:
         )
         self._supply_samples: deque[tuple[float, float]] = deque()
         self._recent_temperatures: deque[tuple[float, float]] = deque()
+        self._recovery_context: SlowContext | None = None
         self._recovery_start: float | None = None
         self._recovery_context_changed = False
         self._start: float | None = None
@@ -173,10 +174,6 @@ class SlowCalibration:
         # Detect real heat loss from the raw reading, never hide it in the mean.
         raw_supply = ctx.supply_temperature
         unavailable = raw_supply is not None and raw_supply <= ctx.room_temperature
-        if self._recovery and self._supply_samples and raw_supply is not None:
-            # Short recovery responses cannot average away a changed heat input.
-            if abs(raw_supply - self._supply_samples[-1][1]) >= 3.0:
-                self._recovery_context_changed = True
         if (
             unavailable
             or ctx.window_open
@@ -199,7 +196,10 @@ class SlowCalibration:
         # Compare against the start of the held experiment as well as the
         # preceding sample: small successive changes can otherwise hide a large
         # supply/weather drift and teach the wrong valve response.
-        anchor = self._window_context
+        # Recovery resets the normal window every tick. Keep its own anchor so
+        # cumulative changes in the heating mean still invalidate learning,
+        # while individual burner cycles do not.
+        anchor = self._recovery_context if self._recovery else self._window_context
         if anchor is not None:
             changed = changed or (
                 abs(ctx.outdoor_temperature - anchor.outdoor_temperature) >= 3.0
@@ -314,6 +314,7 @@ class SlowCalibration:
                 if self._recovery != direction:
                     self._last_recovery_step = float("-inf")
                     self._recovery_start = ctx.t
+                    self._recovery_context = ctx
                     self._recovery_context_changed = False
                 self._recovery = direction
             if self._recovery:

@@ -324,7 +324,11 @@ def test_weather_and_supply_changes_do_not_reopen_warm_recovery():
         assert (
             adapter.step(replace(ctx, t=720, room_temperature=21.3)).valve_percent == 0
         )
-        result = adapter.step(replace(ctx, t=780, room_temperature=21.1))
+        # A sustained new heating level (not one boiler-cycle sample) must
+        # invalidate recovery evidence without cancelling the closed command.
+        for t in range(780, 4260, 60):
+            assert adapter.step(replace(ctx, t=t)).valve_percent == 0
+        result = adapter.step(replace(ctx, t=4260, room_temperature=21.1))
         assert result is not None
         assert result.valve_percent == 40
         assert adapter.export_state() == {"baseline": 40}
@@ -416,3 +420,31 @@ def test_clock_reset_discards_supply_mean_history():
     adapter.step(context(0, supply_temperature=50))
     result = adapter.step(context(60, supply_temperature=50))
     assert result.diagnostics["supply_mean_temperature"] == 50
+
+
+def test_boiler_cycles_allow_one_recovery_baseline_step():
+    """Normal cycling must not keep a successfully warmed WC at zero baseline."""
+    adapter = SlowCalibrationAdapter()
+    adapter.reset({"baseline": 0})
+    result = None
+    for t in range(0, 7201, 60):
+        supply = 28 if t % 1200 < 600 else 40
+        room = 20.7 if t < 3600 else 20.0 if t < 7140 else 20.9
+        result = adapter.step(context(t, room=room, supply_temperature=supply))
+    assert result is not None
+    assert adapter.baseline == 3
+    assert result.valve_percent == 3
+    assert "last_recovery_s" in adapter.export_state()["response"]
+
+
+def test_sustained_supply_drift_during_recovery_invalidates_learning():
+    """A changed heating level cannot teach a valve-only baseline correction."""
+    adapter = SlowCalibrationAdapter()
+    result = None
+    for t in range(0, 7201, 60):
+        room = 20.7 if t < 3600 else 20.0 if t < 7200 else 20.9
+        supply = 35 if t < 4200 else 45
+        result = adapter.step(context(t, room=room, supply_temperature=supply))
+    assert result is not None
+    assert result.valve_percent == 40
+    assert adapter.export_state() == {"baseline": 40}
