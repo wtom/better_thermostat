@@ -76,3 +76,16 @@ def test_plant_params_reject_non_positive_wall_coupling_in_rc3():
     """RC3 mode requires a positive room-wall coupling."""
     with pytest.raises(ValueError):
         PlantParams(tau_wall_min=900.0, r_room_wall=0.0)
+
+
+def test_hot_radiator_keeps_warming_room_after_valve_closes():
+    """A closed valve must not erase stored radiator heat."""
+    from tests.benchmark.scenarios import S39_SLOW_WEEK_RESTART
+
+    plant = TwoStatePlant(
+        S39_SLOW_WEEK_RESTART.plant, PlantState(T_room=21.0, T_rad=37.0, T_wall=18.0)
+    )
+    for _ in range(10):
+        plant.step(dt_s=30.0, u=0.0, T_outdoor=5.0)
+    assert plant.state.T_room > 21.5
+    assert 21.0 < plant.state.T_rad < 37.0

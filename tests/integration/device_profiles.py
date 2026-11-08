@@ -399,6 +399,18 @@ what makes it discoverable and writable; direct valve control is the one
 calibration strategy that puts a percentage on the wire at all.
 """
 
+SLOW_VALVE_TRV = DeviceProfile(
+    name="slow_valve_trv",
+    integration="mqtt",
+    calibration="direct_valve_based",
+    calibration_mode="slow_calibration",
+    has_device_registry_entry=True,
+    current_temperature=19.0,
+    valve_channel=ValveChannel.NUMBER_ENTITY,
+)
+"""An explicitly selected experimental slow-calibration radiator."""
+
+
 ZHA_VALVE_QUIRK_TRV = DeviceProfile(
     name="zha_valve_quirk_trv",
     integration="zha",
@@ -644,6 +656,7 @@ SINGLE_ROLE_PROFILES = (
     MQTT_OFFSET_TRV,
     TADO_OFFSET_TRV,
     VALVE_TRV,
+    SLOW_VALVE_TRV,
     RANGE_ONLY_HEAT_TRV,
 )
 """Every profile a test can drive as the single controlled device."""

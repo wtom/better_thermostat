@@ -194,6 +194,7 @@ class CalibrationMode(StrEnum):
     HEATING_POWER_CALIBRATION = "heating_power_calibration"
     NO_CALIBRATION = "no_calibration"
     MPC_CALIBRATION = "mpc_calibration"
+    SLOW_CALIBRATION = "slow_calibration"
     MPC_V2_CALIBRATION = "mpc_v2_calibration"
     TPI_CALIBRATION = "tpi_calibration"
     PID_CALIBRATION = "pid_calibration"

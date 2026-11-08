@@ -216,16 +216,25 @@ def collect_balance_attrs(bt: TelemetrySource) -> dict[str, object]:
             bt.temperature_slope
         )
 
+    slow_debug: dict[str, Mapping[str, object]] = {}
     bal_compact: dict[str, dict[str, float | None]] = {}
     for trv, info in bt.real_trvs.items():
         bal = info.calibration_balance
         if bal is None:
             continue
         bal_compact[trv] = {"valve%": bal.get("valve_percent")}
+        debug = bal.get("debug", {})
+        if debug.get("mode") == "slow":
+            slow_debug[trv] = debug
     if bal_compact:
         balance = _strict_json(bal_compact, "calibration balance")
         if balance is not None:
             out["calibration_balance"] = balance
+
+    if slow_debug:
+        diagnostic = _strict_json(slow_debug, "slow calibration")
+        if diagnostic is not None:
+            out["slow_calibration"] = diagnostic
 
     return out
 
@@ -357,6 +366,7 @@ TELEMETRY_ATTRIBUTES: frozenset[str] = frozenset(
         ATTR_HEATING_POWER_NORMALIZED,
         ATTR_STATE_TEMPERATURE_SLOPE,
         "calibration_balance",
+        "slow_calibration",
         ATTR_PID_MEASUREMENT_SLOPE,
         *(dst_key for _, dst_key, _ in _PID_SCALAR_FIELDS),
         *(dst_key for _, dst_key, _ in _MPC_V2_FIELDS),

@@ -436,7 +436,8 @@ class TestTelemetryAttributes:
             }
         )
         written = set()
-        for bt in (pid, mpc):
+        slow = _fully_populated_bt({"mode": "slow", "baseline": 40, "reason": "hold"})
+        for bt in (pid, mpc, slow):
             written |= collect_cycle_telemetry(bt).keys()
             written |= collect_balance_attrs(bt).keys()
             written |= collect_pid_debug_attrs(bt).keys()

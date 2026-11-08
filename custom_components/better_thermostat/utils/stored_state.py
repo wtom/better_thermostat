@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import TypedDict
 
+from .calibration.slow import SlowState
+
 StoredMpcState = TypedDict(  # noqa: UP013
     "StoredMpcState",
     {
@@ -134,6 +136,7 @@ StoredRuntimeState = TypedDict(  # noqa: UP013
         "mpc": dict[str, StoredMpcState],
         "mpc_v2": dict[str, StoredMpcV2State],
         "mpc_v2_reid": dict[str, StoredMpcV2Reid],
+        "slow": dict[str, SlowState],
         "pid": dict[str, StoredPidState],
         "tpi": dict[str, StoredTpiState],
         "thermal": StoredThermalStats,
