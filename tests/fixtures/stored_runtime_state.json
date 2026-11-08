@@ -158,6 +158,7 @@
       "rmse_fit_K": 0.0
     }
   },
+  "slow": {},
   "pid": {
     "bt:full": {
       "pid_integral": 4.5,

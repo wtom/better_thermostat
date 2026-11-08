@@ -101,10 +101,6 @@ async def _run_advanced(flow):
                 )
             ),
         ),
-        patch(
-            "custom_components.better_thermostat.config_flow._normalize_advanced_submission",
-            return_value={},
-        ),
         patch.object(ConfigFlow, "async_step_confirm", new=confirm),
     ):
         await flow.async_step_advanced({})
