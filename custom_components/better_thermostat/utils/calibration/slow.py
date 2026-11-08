@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 from typing import TypedDict
 
@@ -97,6 +97,7 @@ class SlowCalibration:
             if isinstance(points, list)
             else []
         )
+        self._supply_samples: deque[tuple[float, float]] = deque()
         self._recent_temperatures: deque[tuple[float, float]] = deque()
         self._recovery_start: float | None = None
         self._recovery_context_changed = False
@@ -140,6 +141,27 @@ class SlowCalibration:
         self._sum_error = 0.0
         self._elapsed = 0.0
 
+    def _mean_supply(self, now: float, value: float | None) -> float | None:
+        """Time-weighted trailing hour, using the last reported value per interval."""
+        samples = self._supply_samples
+        if value is None:
+            samples.clear()
+            return None
+        samples.append((now, value))
+        cutoff = now - 3600.0
+        while len(samples) > 1 and samples[1][0] <= cutoff:
+            samples.popleft()
+        duration = now - max(cutoff, samples[0][0])
+        if duration <= 0:
+            return value
+        return (
+            sum(
+                (end[0] - max(cutoff, start[0])) * start[1]
+                for start, end in zip(samples, list(samples)[1:], strict=False)
+            )
+            / duration
+        )
+
     def step(self, ctx: SlowContext) -> SlowOutput:
         """Compute a held opening without access to plant-internal truth."""
         if self.baseline is None:
@@ -148,6 +170,20 @@ class SlowCalibration:
             ctx.t < self._previous.t or ctx.t - self._previous.t > 900
         ):
             self.interrupt()
+        # Detect real heat loss from the raw reading, never hide it in the mean.
+        raw_supply = ctx.supply_temperature
+        unavailable = raw_supply is not None and raw_supply <= ctx.room_temperature
+        if self._recovery and self._supply_samples and raw_supply is not None:
+            # Short recovery responses cannot average away a changed heat input.
+            if abs(raw_supply - self._supply_samples[-1][1]) >= 3.0:
+                self._recovery_context_changed = True
+        if (
+            unavailable
+            or ctx.window_open
+            or (self._previous and self._previous.window_open)
+        ):
+            self._supply_samples.clear()
+        ctx = replace(ctx, supply_temperature=self._mean_supply(ctx.t, raw_supply))
         error = ctx.target_temperature - ctx.room_temperature
         previous = self._previous
         changed = previous is not None and (
@@ -175,10 +211,6 @@ class SlowCalibration:
                     and abs(ctx.supply_temperature - anchor.supply_temperature) >= 3.0
                 )
             )
-        unavailable = (
-            ctx.supply_temperature is not None
-            and ctx.supply_temperature <= ctx.room_temperature
-        )
         disturbed = ctx.window_open or unavailable or ctx.solar_intensity >= 0.2
         self._previous = ctx
         # Weather/supply drift invalidates learning, not an active comfort
@@ -191,7 +223,8 @@ class SlowCalibration:
             self._recovery_context_changed = True
         if self._start is None or changed or disturbed:
             self._begin(ctx)
-            self._exception_since = None
+            if cancel_recovery:
+                self._exception_since = None
             if cancel_recovery or self._recovery is None:
                 self._recovery = None
                 self._command = None
@@ -365,6 +398,7 @@ class SlowCalibration:
             diagnostics={
                 "reason": reason,
                 "baseline": self.baseline,
+                "supply_mean_temperature": ctx.supply_temperature,
                 "recent_trend_k_per_h": recent_trend,
                 "response": dict(self._response),
                 "holding_point_count": len(self._holding_points),

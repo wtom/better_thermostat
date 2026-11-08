@@ -362,3 +362,57 @@ def test_target_and_disturbances_still_cancel_warm_recovery():
         assert result.valve_percent == expected
         assert result is not None
         assert result.diagnostics["reason"] != "recovery_warm"
+
+
+def test_boiler_cycles_allow_normal_calibration_from_zero():
+    adapter = SlowCalibrationAdapter()
+    results = []
+    for t in range(0, 18001, 60):
+        # 30-minute burner cycle, like the live WC pilot; never a heat outage.
+        supply = 27 + 14 * ((t % 1800) / 1800)
+        results.append(
+            adapter.step(
+                replace(
+                    context(t, room=20.65, supply_temperature=supply),
+                    last_valve_percent=0,
+                )
+            )
+        )
+    assert any(r.diagnostics["reason"] == "calibrate_open" for r in results)
+    assert adapter.baseline == 3
+    assert results[-1].diagnostics["recent_trend_k_per_h"] == 0
+
+
+def test_environment_resets_do_not_starve_comfort_timer():
+    result = None
+    adapter = SlowCalibrationAdapter()
+    for t in range(0, 601, 60):
+        result = adapter.step(
+            replace(context(t, room=20), outdoor_temperature=5 + t / 60)
+        )
+    assert result is not None
+    assert result.valve_percent == 50
+    assert result.diagnostics["reason"] == "recovery_cold"
+
+
+def test_supply_mean_is_time_weighted_and_expires_old_values():
+    adapter = SlowCalibrationAdapter()
+    for t, supply in [(0, 30), (600, 40), (900, 40)]:
+        result = adapter.step(context(t, supply_temperature=supply))
+    assert abs(result.diagnostics["supply_mean_temperature"] - 100 / 3) < 1e-9
+    for t in range(1500, 4201, 300):
+        result = adapter.step(context(t, supply_temperature=40))
+    assert result.diagnostics["supply_mean_temperature"] == 40
+    result = adapter.step(context(4260, supply_temperature=19))
+    assert result.diagnostics["reason"] == "disturbance"
+    result = adapter.step(context(4320, supply_temperature=None))
+    assert result.diagnostics["supply_mean_temperature"] is None
+
+
+def test_clock_reset_discards_supply_mean_history():
+    adapter = SlowCalibrationAdapter()
+    adapter.step(context(0, supply_temperature=30))
+    adapter.step(context(600, supply_temperature=40))
+    adapter.step(context(0, supply_temperature=50))
+    result = adapter.step(context(60, supply_temperature=50))
+    assert result.diagnostics["supply_mean_temperature"] == 50

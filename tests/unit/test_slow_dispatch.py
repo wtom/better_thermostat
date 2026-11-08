@@ -262,3 +262,29 @@ async def test_slow_explanation_is_published_as_entity_attribute(hass):
     debug = json.loads(value)["climate.trv_0"]
     assert debug["baseline"] == 40
     assert debug["reason"] == "hold"
+
+
+async def test_dhw_hot_supply_never_enters_or_survives_in_heating_mean(hass):
+    """DHW interrupts the mean as well as the learning timer."""
+    bt = room(hass)
+    bt.mpc_v2_dhw_sensor_entity_id = "sensor.dhw_pump"
+    bt.mpc_v2_supply_sensor_entity_id = "sensor.supply"
+    eid = "climate.trv_0"
+    for t, dhw, supply in [
+        (0, "0", 35),
+        (300, "0", 35),
+        (600, "1", 65),
+        (900, "1", 70),
+        (1200, "0", 36),
+    ]:
+        bt.clock.monotonic_value = t
+        hass.states.async_set("sensor.dhw_pump", dhw)
+        hass.states.async_set("sensor.supply", supply)
+        _compute_slow_balance(bt, eid)
+        debug = bt.real_trvs[eid].calibration_balance["debug"]
+        if dhw == "1":
+            assert debug["reason"] == "heat_unavailable"
+            assert not bt.state_mgr.get_slow_live(
+                "slow_test:group:slow"
+            )._supply_samples
+    assert debug["supply_mean_temperature"] == 36
