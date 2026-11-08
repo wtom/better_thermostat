@@ -1231,15 +1231,22 @@ async def test_each_thermostat_of_a_room_gets_its_own_advanced_step(hass):
     ]
 
 
-async def test_slow_mode_requires_writable_direct_valve_output(hass):
+@pytest.mark.parametrize("flow_kind", ["create", "options"])
+async def test_slow_mode_requires_writable_direct_valve_output(hass, flow_kind):
     """A slow experiment cannot silently become setpoint calibration."""
     set_room_sensor(hass, 19.0)
     (trv,) = await build_devices(hass, GENERIC_HEAT_TRV)
-    form = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
-    form = await hass.config_entries.flow.async_configure(
-        form["flow_id"], _user_step_input(trv.entity_id)
-    )
-    form = await hass.config_entries.flow.async_configure(
+    if flow_kind == "create":
+        flow = hass.config_entries.flow
+        form = await flow.async_init(DOMAIN, context={"source": "user"})
+    else:
+        entry = make_entry(GENERIC_HEAT_TRV)
+        await setup_entry(hass, entry)
+        await wait_for_startup(hass, entry)
+        flow = hass.config_entries.options
+        form = await flow.async_init(entry.entry_id)
+    form = await flow.async_configure(form["flow_id"], _user_step_input(trv.entity_id))
+    form = await flow.async_configure(
         form["flow_id"],
         {
             CONF_CALIBRATION_MODE: CalibrationMode.SLOW_CALIBRATION,

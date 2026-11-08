@@ -89,6 +89,57 @@ async def test_capped_room_does_not_learn_unapplied_opening(hass):
     assert _compute_slow_balance(bt, "climate.trv_1") == (30, True)
 
 
+async def test_missing_state_manager_does_not_issue_a_valve_command(hass):
+    """An uninitialized store must not create an untracked live controller."""
+    bt = room(hass)
+    bt.state_mgr = None
+    assert _compute_slow_balance(bt, "climate.trv_0") == (None, False)
+
+
+@pytest.mark.parametrize("hot", [False, True])
+@pytest.mark.parametrize("learned", [False, True])
+@pytest.mark.parametrize("interruption", ["dhw", "missing_supply"])
+async def test_unavailable_heat_freezes_learning_but_preserves_warm_protection(
+    hass, hot, learned, interruption
+):
+    """DHW diversion and missing configured supply cannot count as room trials."""
+    bt = room(hass)
+    if learned:
+        controller = bt.state_mgr.get_slow_live("slow_test:group:slow")
+        controller.reset({"baseline": 35.0})
+    if interruption == "dhw":
+        bt.mpc_v2_dhw_sensor_entity_id = "binary_sensor.dhw"
+        hass.states.async_set("binary_sensor.dhw", "on")
+    else:
+        bt.mpc_v2_supply_sensor_entity_id = "sensor.missing_supply"
+    if hot:
+        bt.room_temperature = 21.7
+    expected = 0.0 if hot else 35.0 if learned else 40.0
+    assert _compute_slow_balance(bt, "climate.trv_0") == (expected, True)
+    controller = bt.state_mgr.get_slow_live("slow_test:group:slow")
+    assert controller._start is None
+    assert controller.baseline == (35.0 if learned else None)
+    assert bt.real_trvs["climate.trv_0"].calibration_balance["debug"]["reason"] == (
+        "heat_unavailable"
+    )
+
+
+async def test_new_cap_clamps_existing_learning_and_later_calibration(hass):
+    """Neither a saved baseline nor a new calibration step may exceed the cap."""
+    bt = room(hass)
+    eid = "climate.trv_0"
+    _compute_slow_balance(bt, eid)
+    bt.real_trvs[eid].valve_max_opening = 30
+    bt.real_trvs[eid].valve_position = 30
+    for t in range(0, 10801, 300):
+        bt.clock.monotonic_value = t
+        assert _compute_slow_balance(bt, eid) == (30, True)
+    controller = bt.state_mgr.get_slow_live("slow_test:group:slow")
+    assert controller.baseline == 30
+    assert controller._start is None
+    assert bt.real_trvs[eid].calibration_balance["debug"]["reason"] == "cap_hold"
+
+
 async def test_failed_write_does_not_become_learning_evidence(hass):
     """Repeated recommendations without matching feedback cannot teach a baseline."""
     bt = room(hass)
