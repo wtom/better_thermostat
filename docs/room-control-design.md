@@ -520,3 +520,69 @@ mismatch now invalidates learning (feedback tolerance below 0.5 points).
 Learning persistence and DHW exclusion are unchanged. Historical benchmark
 results above describe the previous 3-hour configuration, not this new default;
 legacy scenario tests retain an explicit 3-hour window.
+
+
+## House-heating review and sunshine correction — 2026-11-09
+
+The weather service's sunshine estimate is no longer a disturbance gate or a
+context-reset trigger in SlowCalibration. It does not establish heat gain in
+any individual room (orientation, shading and shutters are unknown). Both
+comfort protection and normal observation continue under sunny/changing reports.
+The field remains an input for compatibility; it has no effect on decisions.
+Actual indoor temperature and its measured trend drive the response. Window,
+heat-unavailable, DHW, supply-context, feedback and setpoint gates are unchanged.
+Outdoor temperature still qualifies the reuse of old holding points and marks
+large load-context changes; it does not determine whether a cold room may heat.
+Earlier references to solar invalidation above describe superseded behaviour.
+
+### Critical assessment against the user's goal
+
+The sample-and-hold architecture is a useful **experimental room-demand
+balancer**, not yet a proven dynamic hydraulic balance for this house:
+
+- Normal observation is 1 h with 1/3-point steps. A one-hour linear projection
+  is used at window completion. This is a heuristic, not an identified thermal
+  model: radiator lag, valve nonlinearity and afterheat are not learned.
+- Cold protection still starts at a sustained 0.5 K deficit (10 min), with
+  fixed 10-point steps at least 15 min apart. The warming-trend guard stops
+  subsequent increases; cold protection has no symmetric predictive entry
+  equivalent to warm protection. Step size does not yet scale with deficit
+  or measured room response. These remain next-iteration work, not claims
+  that this sunshine patch implements adaptive gain learning.
+- Finishing cold recovery returns to the old baseline plus 3 points. For an
+  initially inadequate baseline this may repeat recovery/cooling cycles.
+  Blindly persisting the temporary boost would also be wrong; it is not the
+  equilibrium opening. A future change needs closed-loop recovery tests.
+- A settled window is only a conditional holding observation. Unknown indoor
+  gains can make an apparently good opening temporary. No temperature-only
+  observer can uniquely attribute heat to radiator versus sun/people/cooking.
+  Old points must remain bounded hints; repeated confirmation and recency
+  deserve attention before relying on them for automatic curve reduction.
+- Shared pump pressure, valve flow curves, minimum circuit flow and differing
+  radiator sizes are not modeled. Valve percent is not flow percent. The
+  current pilot consists of three single-TRV rooms; whole-house and multi-TRV
+  hydraulic interaction remains unproven. Bathroom floor-loop authority is
+  unchanged.
+- There is no automatic outer heating-curve optimizer. First establish stable
+  room comfort, then lower supply separately and evaluate all rooms over long
+  windows. A persistently cold room at 100% with available heat is a stop/
+  rollback condition, not a reason to keep lowering supply. Exclude faults,
+  windows, warm-up and DHW. Boiler minimum flow/cycling also matter.
+
+### Evidence and boundaries
+
+506 benchmark/dispatch/HA-integration tests passed after the sunshine fix,
+including sunny-versus-shaded identical room histories, weather changes during
+warm recovery, cold recovery, normal calibration and holding-point learning.
+Two seven-day closed-loop RC3 simulations were rerun with current 1 h defaults,
+sensor noise/lag and a restart. On the final day, the constant-condition test
+settled at 25% with <0.001 K true-plant error; the varying-weather/target test
+had 0.234 K RMSE, 0.495 K peak overshoot and 0.385 K peak deficit, with 61 points
+of valve travel. These synthetic results demonstrate both capability and limits;
+not house calibration, proof of all-room comfort, or gas savings. The comparable
+PID fixture had 0.266 K RMSE and 4025 points travel in the latter test; this is
+not a general PID-versus-slow ranking.
+
+Evidence: workspace artifacts/heizung/slow-weather-audit-20261109/.
+No curve setting, room target, actuator scope or other calibration mode changes
+are part of this patch. Continue the bounded pilot, not an all-room rollout.

@@ -84,12 +84,11 @@ def test_window_and_supply_change_restart_observation():
     assert result.valve_percent == 43
 
 
-def test_solar_and_unavailable_supply_do_not_train_baseline():
-    for disturbance in ({"solar_intensity": 0.5}, {"supply_temperature": 19}):
-        adapter = SlowCalibrationAdapter(hold_s=10800)
-        for t in range(0, 21601, 60):
-            adapter.step(context(t, room=20, **disturbance))
-        assert adapter.export_state() == {"baseline": 40}
+def test_unavailable_supply_does_not_train_baseline():
+    adapter = SlowCalibrationAdapter(hold_s=10800)
+    for t in range(0, 21601, 60):
+        adapter.step(context(t, room=20, supply_temperature=19))
+    assert adapter.export_state() == {"baseline": 40}
 
 
 def test_target_drop_does_not_reuse_old_observations():
@@ -231,7 +230,6 @@ def test_holding_point_does_not_extrapolate_or_override_disturbances():
         context(room=21, supply_temperature=49),
         replace(context(room=21, supply_temperature=45), outdoor_temperature=8),
         replace(context(room=21, supply_temperature=45), target_temperature=22),
-        context(room=21, supply_temperature=45, solar_intensity=0.5),
     ]
     for ctx in variants:
         adapter.reset(state)
@@ -355,7 +353,6 @@ def test_target_and_disturbances_still_cancel_warm_recovery():
         ({"target_temperature": 22}, 40),
         ({"window_open": True}, 0),
         ({"supply_temperature": 19}, 40),
-        ({"solar_intensity": 0.5}, 40),
     ]
     for changes, expected in variants:
         adapter = SlowCalibrationAdapter(hold_s=10800)
@@ -491,3 +488,44 @@ def test_unapplied_single_point_step_cannot_train_next_window():
         adapter.step(context(t, room=20.75))
     assert adapter.baseline == 41
     assert adapter.export_state()["response"]["observed_opening"] == 40
+
+
+@pytest.mark.parametrize("room", [20.0, 20.65, 21.0, 21.7])
+def test_weather_sunshine_does_not_change_room_control_or_learning(room):
+    """Unknown room exposure cannot block comfort or discard measured learning."""
+    shaded = SlowCalibrationAdapter()
+    weather_sunny = SlowCalibrationAdapter()
+    actual = None
+    for t in range(0, 7201, 60):
+        ctx = context(t, room=room, supply_temperature=35)
+        expected = shaded.step(ctx)
+        # Both continuous sunshine and changing reports leave room inputs intact.
+        solar = 1.0 if t < 3600 or t % 600 < 300 else 0.0
+        actual = weather_sunny.step(replace(ctx, solar_intensity=solar))
+        assert actual == expected
+    assert weather_sunny.export_state() == shaded.export_state()
+    assert actual is not None
+    assert actual.valve_percent is not None
+    if room == 20.0:
+        assert actual.valve_percent > 40
+    elif room == 21.7:
+        assert actual.valve_percent == 0
+    elif room == 20.65:
+        assert weather_sunny.baseline is not None
+        assert weather_sunny.baseline > 40
+    else:
+        assert weather_sunny.export_state()["holding_points"]
+
+
+def test_sunshine_does_not_reopen_warm_room_during_recovery():
+    """A weather change must not undo the room's active overheat protection."""
+    adapter = SlowCalibrationAdapter()
+    adapter.step(context(room=21.7, supply_temperature=35))
+    assert (
+        adapter.step(context(600, room=21.7, supply_temperature=35)).valve_percent == 0
+    )
+    result = adapter.step(
+        context(660, room=21.45, supply_temperature=35, solar_intensity=1)
+    )
+    assert result.valve_percent == 0
+    assert result.diagnostics["reason"] == "recovery_warm"

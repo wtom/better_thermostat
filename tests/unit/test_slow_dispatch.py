@@ -198,7 +198,7 @@ def test_long_measurement_gap_discards_observation():
 
 
 def test_solar_disturbance_does_not_disable_warm_protection():
-    """Sun invalidates learning but cannot require continued heating of a hot room."""
+    """Weather sunshine leaves sustained room-level overheat protection active."""
     controller = SlowCalibration()
     ctx = SlowContext(
         t=0,
@@ -208,7 +208,8 @@ def test_solar_disturbance_does_not_disable_warm_protection():
         last_valve_percent=40,
         solar_intensity=0.8,
     )
-    assert controller.step(ctx).valve_percent == 0
+    controller.step(ctx)
+    assert controller.step(replace(ctx, t=600)).valve_percent == 0
     assert controller.baseline == 40
 
 

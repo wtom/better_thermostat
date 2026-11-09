@@ -31,6 +31,7 @@ class SlowContext:
     outdoor_temperature: float
     last_valve_percent: float = 0.0
     window_open: bool = False
+    # Weather-level sunshine is not evidence of heat entering this room.
     solar_intensity: float = 0.0
     supply_temperature: float | None = None
 
@@ -186,7 +187,6 @@ class SlowCalibration:
         changed = previous is not None and (
             ctx.target_temperature != previous.target_temperature
             or ctx.window_open != previous.window_open
-            or abs(ctx.solar_intensity - previous.solar_intensity) >= 0.2
             or (
                 ctx.supply_temperature is not None
                 and previous.supply_temperature is not None
@@ -211,7 +211,7 @@ class SlowCalibration:
                     and abs(ctx.supply_temperature - anchor.supply_temperature) >= 3.0
                 )
             )
-        disturbed = ctx.window_open or unavailable or ctx.solar_intensity >= 0.2
+        disturbed = ctx.window_open or unavailable
         self._previous = ctx
         # Weather/supply drift invalidates learning, not an active comfort
         # command. Target changes and disturbances still cancel that command.
