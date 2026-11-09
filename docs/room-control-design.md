@@ -507,3 +507,16 @@ allowance, a divergent or missing recovery echo invalidates its learning without
 cancelling comfort control. Natural cooling after a failed close cannot teach a
 lower baseline. The `slow_calibration` live attribute is excluded from Recorder,
 like existing controller diagnostics; explicitly collect it during a pilot.
+
+
+## House pilot update — 2026-11-09
+
+Default normal observation windows are now 1 hour. At window completion, both
+mean and current absolute error within 0.35 K select a 1-percentage-point
+correction; larger errors retain the 3-point coarse correction. The existing
+0.2 K acceptance band and trend projection still decide whether any correction
+is needed. Recovery remains independent and unchanged. A 1-point actuator
+mismatch now invalidates learning (feedback tolerance below 0.5 points).
+Learning persistence and DHW exclusion are unchanged. Historical benchmark
+results above describe the previous 3-hour configuration, not this new default;
+legacy scenario tests retain an explicit 3-hour window.

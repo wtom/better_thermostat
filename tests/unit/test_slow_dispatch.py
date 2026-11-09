@@ -25,7 +25,7 @@ from tests.factories import make_bt
 def room(hass, count=1):
     """A room with verified direct-valve feedback, not a mocked controller."""
     bt = make_bt(
-        trv_ids=tuple(f"climate.trv_{i}" for i in range(count)), room_temperature=20.7
+        trv_ids=tuple(f"climate.trv_{i}" for i in range(count)), room_temperature=20.6
     )
     bt.unique_id = "slow_test"
     bt.state_mgr = StateManager(hass, "slow_test")
@@ -49,10 +49,10 @@ def room(hass, count=1):
 async def test_room_holds_then_makes_one_small_shared_step(hass):
     """Unequal radiator temperatures must not defeat the fixed room opening."""
     bt = room(hass, 2)
-    for t in range(0, 10801, 300):
+    for t in range(0, 3601, 300):
         bt.clock.monotonic_value = t
         results = [_compute_slow_balance(bt, eid)[0] for eid in bt.real_trvs]
-        assert results == ([40, 40] if t < 10800 else [43, 43])
+        assert results == ([40, 40] if t < 3600 else [43, 43])
     assert bt.real_trvs["climate.trv_0"].calibration_balance["debug"]["experimental"]
 
 
@@ -131,7 +131,7 @@ async def test_new_cap_clamps_existing_learning_and_later_calibration(hass):
     _compute_slow_balance(bt, eid)
     bt.real_trvs[eid].valve_max_opening = 30
     bt.real_trvs[eid].valve_position = 30
-    for t in range(0, 10801, 300):
+    for t in range(0, 3601, 300):
         bt.clock.monotonic_value = t
         assert _compute_slow_balance(bt, eid) == (30, True)
     controller = bt.state_mgr.get_slow_live("slow_test:group:slow")
@@ -144,11 +144,11 @@ async def test_failed_write_does_not_become_learning_evidence(hass):
     """Repeated recommendations without matching feedback cannot teach a baseline."""
     bt = room(hass)
     trv = bt.real_trvs["climate.trv_0"]
-    for t in range(0, 10801, 300):
+    for t in range(0, 3601, 300):
         bt.clock.monotonic_value = t
         _compute_slow_balance(bt, trv.entity_id)
     assert bt.state_mgr.state.slow["slow_test:group:slow"]["baseline"] == 43
-    for t in range(11100, 33001, 300):
+    for t in range(3900, 11101, 300):
         bt.clock.monotonic_value = t
         _compute_slow_balance(bt, trv.entity_id)
     assert bt.state_mgr.state.slow["slow_test:group:slow"]["baseline"] == 43
@@ -189,7 +189,7 @@ def test_long_measurement_gap_discards_observation():
     ctx = SlowContext(
         t=0,
         target_temperature=21,
-        room_temperature=20.7,
+        room_temperature=20.6,
         outdoor_temperature=5,
         last_valve_percent=40,
     )

@@ -16,7 +16,7 @@ class SlowCalibrationAdapter:
     name = "slow"
     family: ControllerFamily = "valve"
 
-    def __init__(self, hold_s: float = 10800.0, step_percent: float = 3.0) -> None:
+    def __init__(self, hold_s: float = 3600.0, step_percent: float = 3.0) -> None:
         self.controller = SlowCalibration(hold_s, step_percent)
 
     @property

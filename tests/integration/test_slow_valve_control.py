@@ -90,7 +90,7 @@ async def test_slow_learning_survives_store_flush_and_entry_reload(
     key = f"{bt.unique_id}:group:slow"
     controller = bt.state_mgr.get_slow_live(key)
     controller.reset({"baseline": 37.0})
-    for t in range(0, 10801, 300):
+    for t in range(0, 3601, 300):
         controller.step(
             SlowContext(
                 t=t,
@@ -104,7 +104,7 @@ async def test_slow_learning_survives_store_flush_and_entry_reload(
     learned = controller.export_state()
     assert learned["baseline"] == 37.0
     assert len(learned["holding_points"]) == 1
-    assert learned["response"]["window_s"] == 10800
+    assert learned["response"]["window_s"] == 3600
     bt.state_mgr.set_slow_live(key, controller)
     bt.schedule_save_state()
     # Unload must flush the pending delayed save; the next setup owns a new

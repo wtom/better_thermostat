@@ -49,7 +49,7 @@ class SlowCalibration:
     name = "slow"
     family = "valve"
 
-    def __init__(self, hold_s: float = 10800.0, step_percent: float = 3.0) -> None:
+    def __init__(self, hold_s: float = 3600.0, step_percent: float = 3.0) -> None:
         self.hold_s = hold_s
         self.step_percent = step_percent
         self.reset()
@@ -126,7 +126,7 @@ class SlowCalibration:
         """
         expected = self._command if self._recovery else self.baseline
         if expected is None or all(
-            value is not None and abs(value - expected) <= 1.0 for value in openings
+            value is not None and abs(value - expected) < 0.5 for value in openings
         ):
             return
         if self._recovery:
@@ -364,6 +364,14 @@ class SlowCalibration:
                         "outdoor_temperature": ctx.outdoor_temperature,
                         "target_temperature": ctx.target_temperature,
                     }
+                    # Near target, refine in single percentage points. Larger
+                    # errors retain the coarse step; comfort recovery is separate.
+                    correction_step = (
+                        min(1.0, self.step_percent)
+                        if abs(mean_error) <= 0.35 and abs(error) <= 0.35
+                        else self.step_percent
+                    )
+                    self._response["calibration_step_percent"] = correction_step
                     # Correcting windows describe response, not equilibrium.
                     if (
                         abs(mean_error) <= 0.2
@@ -384,10 +392,10 @@ class SlowCalibration:
                     # warming room, nor remove it while it is cooling to target.
                     projected_error = error - trend
                     if mean_error > 0.2 and projected_error > 0.2:
-                        self.baseline = min(100.0, self.baseline + self.step_percent)
+                        self.baseline = min(100.0, self.baseline + correction_step)
                         reason = "calibrate_open"
                     elif mean_error < -0.2 and projected_error < -0.2:
-                        self.baseline = max(0.0, self.baseline - self.step_percent)
+                        self.baseline = max(0.0, self.baseline - correction_step)
                         reason = "calibrate_close"
                     else:
                         reason = "accept"
@@ -398,6 +406,7 @@ class SlowCalibration:
             valve_percent=command,
             diagnostics={
                 "reason": reason,
+                "hold_window_s": self.hold_s,
                 "baseline": self.baseline,
                 "supply_mean_temperature": ctx.supply_temperature,
                 "recent_trend_k_per_h": recent_trend,
