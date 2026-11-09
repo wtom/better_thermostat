@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 import logging
+import math
 
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
@@ -45,7 +46,8 @@ _TRV_ZBT_MODEL = "trv-zbt"
 # fail to fully close the valve when commanded to very small openings.
 #
 # Workaround: when requesting a further close (target_percent < last_percent), briefly
-# command the valve to open a bit more and then to the requested target. A
+# command an intermediate position permitting a 10pp closing stroke, then
+# the requested target. Prefer opening first when the configured cap permits. A
 # close that arrives while that delayed write is still due is written straight
 # away instead of bumping again, so the requested position always reaches the
 # device.
@@ -416,6 +418,14 @@ async def override_set_valve(self: ModelFixHost, entity_id: str, percent: int) -
             ok = await maybe_set_sonoff_valve_percent(self, entity_id, target_percent)
             return ok
 
+        maximum_opening = getattr(trv_state, "valve_max_opening", None)
+        effective_cap = (
+            100
+            if maximum_opening is None or not math.isfinite(maximum_opening)
+            else max(0, min(100, int(maximum_opening)))
+        )
+        target_percent = min(effective_cap, target_percent)
+
         # Cancel any previous pending delayed "bump then set".
         bump_pending = _cancel_pending_valve_bump(trv_state)
 
@@ -429,11 +439,34 @@ async def override_set_valve(self: ModelFixHost, entity_id: str, percent: int) -
             return ok
 
         # Only apply workaround when closing further, and only when the motor
-        # was not already driven open by a bump whose write is still due.
+        # was not already moved by an intermediate whose write is still due.
         if target_percent < last_percent and not bump_pending:
-            bump_percent = min(100, last_percent + _TRVZB_CLOSE_BUMP_OPEN_DELTA_PCT)
+            remaining_positions = [target_percent]
+            bump_percent = min(
+                effective_cap, last_percent + _TRVZB_CLOSE_BUMP_OPEN_DELTA_PCT
+            )
+            if bump_percent - target_percent < _TRVZB_CLOSE_BUMP_OPEN_DELTA_PCT:
+                if last_percent - target_percent >= _TRVZB_CLOSE_BUMP_OPEN_DELTA_PCT:
+                    return await maybe_set_sonoff_valve_percent(
+                        self, entity_id, target_percent
+                    )
+                if last_percent < _TRVZB_CLOSE_BUMP_OPEN_DELTA_PCT:
+                    if effective_cap < _TRVZB_CLOSE_BUMP_OPEN_DELTA_PCT:
+                        # The capped range cannot physically provide a 10pp
+                        # stroke; send the bounded target without that promise.
+                        return await maybe_set_sonoff_valve_percent(
+                            self, entity_id, target_percent
+                        )
+                    bump_percent = effective_cap
+                    remaining_positions.insert(
+                        0, effective_cap - _TRVZB_CLOSE_BUMP_OPEN_DELTA_PCT
+                    )
+                else:
+                    bump_percent = min(
+                        effective_cap, last_percent - _TRVZB_CLOSE_BUMP_OPEN_DELTA_PCT
+                    )
 
-            # If we can't "bump open", fall back to direct set.
+            # A refused intermediate still leaves the requested target due.
             ok_bump = await maybe_set_sonoff_valve_percent(
                 self, entity_id, bump_percent
             )
@@ -448,17 +481,28 @@ async def override_set_valve(self: ModelFixHost, entity_id: str, percent: int) -
 
             async def _delayed_set() -> None:
                 try:
-                    await asyncio.sleep(float(_TRVZB_CLOSE_BUMP_DELAY_S))
-                    if self.is_removed:
-                        return
-                    cur_state = self.real_trvs.get(entity_id)
-                    if cur_state is None or (
-                        cur_state.extra.get("_trvzb_valve_bump_seq", 0) != seq
-                    ):
-                        return
-                    await maybe_set_sonoff_valve_percent(
-                        self, entity_id, target_percent
-                    )
+                    for position in remaining_positions:
+                        await asyncio.sleep(float(_TRVZB_CLOSE_BUMP_DELAY_S))
+                        if self.is_removed or self.in_maintenance:
+                            return
+                        cur_state = self.real_trvs.get(entity_id)
+                        if cur_state is None or (
+                            cur_state.extra.get("_trvzb_valve_bump_seq", 0) != seq
+                        ):
+                            return
+                        # A cap lowered while waiting also bounds the remaining
+                        # writes, even if that prevents the planned full stroke.
+                        current_maximum = cur_state.valve_max_opening
+                        current_cap = (
+                            100
+                            if current_maximum is None
+                            or not math.isfinite(current_maximum)
+                            else max(0, min(100, int(current_maximum)))
+                        )
+                        # A refused middle leg still leaves the final target due.
+                        await maybe_set_sonoff_valve_percent(
+                            self, entity_id, min(current_cap, position)
+                        )
                 except asyncio.CancelledError:
                     return
                 except (RuntimeError, ValueError, KeyError) as ex:
@@ -475,8 +519,8 @@ async def override_set_valve(self: ModelFixHost, entity_id: str, percent: int) -
             )
             if bump_task is None:
                 # The thermostat is being removed and starts no deferred
-                # work. The bump has opened the valve already, so the target
-                # goes out now rather than leaving it open.
+                # work. The intermediate has moved the valve already, so the
+                # target goes out now rather than leaving it there.
                 ok = await maybe_set_sonoff_valve_percent(
                     self, entity_id, target_percent
                 )

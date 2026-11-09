@@ -92,6 +92,312 @@ def writes(monkeypatch):
     return recorded
 
 
+class TestBoundedClosingStroke:
+    """De-sticking needs a full close and no uncompensated tiny final close."""
+
+    @pytest.mark.parametrize(
+        ("previous", "target", "cap", "expected"),
+        [
+            (20, 17, 100, [30, 17]),
+            (95, 94, 100, [85, 94]),
+            (100, 99, 100, [90, 99]),
+            (20, 17, 20, [10, 17]),
+            (95, 80, 100, [100, 80]),
+            (95, 17, 20, [17]),
+            (25, 17, 20, [15, 17]),
+            (20, 17, 20.5, [10, 17]),
+            (20, 7, 8, [7]),
+            (8, 7, 15, [15, 5, 7]),
+            (9, 8, 10, [10, 0, 8]),
+            (9, 8, 11, [11, 1, 8]),
+            (9, 8, 15, [15, 5, 8]),
+            (9, 8, 19, [19, 8]),
+            (1, 0, 10, [10, 0]),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_close_has_a_full_stroke_within_the_cap(
+        self, writes, monkeypatch, previous, target, cap, expected
+    ):
+        """A full closing stroke ends with an opening or another full close."""
+        monkeypatch.setattr(quirk, "_TRVZB_CLOSE_BUMP_DELAY_S", 0.0)
+        mock_self, trv_state = _make_valve_self(last_percent=previous)
+        trv_state.valve_max_opening = cap
+
+        assert await quirk.override_set_valve(mock_self, ENTITY, target)
+        task = trv_state.extra.get("_trvzb_valve_bump_task")
+        assert writes == expected[:1]
+        if task is not None:
+            await task
+
+        assert writes == expected
+        assert all(0 <= value <= min(100, cap) for value in writes)
+        path = [previous, *writes]
+        assert any(start - end >= 10 for start, end in zip(path, path[1:]))
+        assert path[-1] > path[-2] or path[-2] - path[-1] >= 10
+
+    @pytest.mark.parametrize(
+        ("previous", "target", "cap", "expected"),
+        [(8, 7, 8, 7), (8, 7, 5, 5), (8, -10, -1, 0), (0, 100, 8.5, 8)],
+    )
+    @pytest.mark.asyncio
+    async def test_an_incapable_cap_sends_the_bounded_target(
+        self, writes, previous, target, cap, expected
+    ):
+        """A range below ten permits a bounded target without a full stroke."""
+        mock_self, trv_state = _make_valve_self(last_percent=previous)
+        trv_state.valve_max_opening = cap
+
+        assert await quirk.override_set_valve(mock_self, ENTITY, target)
+
+        assert writes == [expected]
+        assert "_trvzb_valve_bump_task" not in trv_state.extra
+
+    @pytest.mark.parametrize("completed_legs", [1, 2])
+    @pytest.mark.parametrize("target", [6, 9, 0], ids=["close", "open", "off"])
+    @pytest.mark.asyncio
+    async def test_a_new_command_cancels_the_remaining_positions(
+        self, writes, monkeypatch, completed_legs, target
+    ):
+        """A superseding command owns the valve throughout a three-leg close."""
+        waiting = [asyncio.Event(), asyncio.Event()]
+        release = [asyncio.Event(), asyncio.Event()]
+        sleeps = 0
+
+        async def _delay(_seconds):
+            nonlocal sleeps
+            index = sleeps
+            sleeps += 1
+            waiting[index].set()
+            await release[index].wait()
+
+        monkeypatch.setattr(quirk.asyncio, "sleep", _delay)
+        mock_self, trv_state = _make_valve_self(last_percent=8)
+        trv_state.valve_max_opening = 15
+        assert await quirk.override_set_valve(mock_self, ENTITY, 7)
+        task = trv_state.extra["_trvzb_valve_bump_task"]
+        try:
+            await waiting[0].wait()
+            if completed_legs == 2:
+                release[0].set()
+                await waiting[1].wait()
+            # The delegate caches the scheduled final intent, not intermediate writes.
+            trv_state.last_valve_percent = 7
+            assert await quirk.override_set_valve(mock_self, ENTITY, target)
+            await task
+            assert writes == [15, *([5] if completed_legs == 2 else []), target]
+            assert "_trvzb_valve_bump_task" not in trv_state.extra
+        finally:
+            await _settle(task)
+
+    @pytest.mark.parametrize("completed_legs", [1, 2])
+    @pytest.mark.parametrize(
+        "stop",
+        [
+            "trv_removal",
+            "thermostat_removal",
+            "owner_removal",
+            "sequence",
+            "maintenance",
+            "maintenance_gate",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_each_deferred_leg_checks_ownership(
+        self, writes, monkeypatch, completed_legs, stop
+    ):
+        """Removal and maintenance leave no old positions due on the valve."""
+        waiting = [asyncio.Event(), asyncio.Event()]
+        release = [asyncio.Event(), asyncio.Event()]
+        sleeps = 0
+
+        async def _delay(_seconds):
+            nonlocal sleeps
+            index = sleeps
+            sleeps += 1
+            waiting[index].set()
+            await release[index].wait()
+
+        monkeypatch.setattr(quirk.asyncio, "sleep", _delay)
+        mock_self, trv_state = _make_valve_self(last_percent=8)
+        trv_state.valve_max_opening = 15
+        assert await quirk.override_set_valve(mock_self, ENTITY, 7)
+        task = trv_state.extra["_trvzb_valve_bump_task"]
+        try:
+            await waiting[0].wait()
+            if completed_legs == 2:
+                release[0].set()
+                await waiting[1].wait()
+            if stop == "trv_removal":
+                mock_self.real_trvs.clear()
+            elif stop == "thermostat_removal":
+                mock_self.is_removed = True
+            elif stop == "owner_removal":
+                mock_self.task_manager.cancel_all()
+            elif stop == "sequence":
+                trv_state.extra["_trvzb_valve_bump_seq"] += 1
+            else:
+                mock_self.in_maintenance = True
+                if stop == "maintenance":
+                    assert await quirk.override_set_valve(mock_self, ENTITY, 100)
+            release[completed_legs - 1].set()
+            await task
+            assert writes == [
+                15,
+                *([5] if completed_legs == 2 else []),
+                *([100] if stop == "maintenance" else []),
+            ]
+        finally:
+            await _settle(task)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_middle_leg_still_attempts_the_target(self, monkeypatch):
+        """An unsuccessful middle stroke must not discard the requested target."""
+        recorded = []
+
+        async def _write(_self, _entity_id, percent):
+            recorded.append(percent)
+            return percent != 5
+
+        monkeypatch.setattr(quirk, "maybe_set_sonoff_valve_percent", _write)
+        monkeypatch.setattr(quirk, "_TRVZB_CLOSE_BUMP_DELAY_S", 0.0)
+        mock_self, trv_state = _make_valve_self(last_percent=8)
+        trv_state.valve_max_opening = 15
+
+        assert await quirk.override_set_valve(mock_self, ENTITY, 7)
+        await trv_state.extra["_trvzb_valve_bump_task"]
+
+        assert recorded == [15, 5, 7]
+
+    @pytest.mark.parametrize("failure", ["first_write", "closed_owner"])
+    @pytest.mark.asyncio
+    async def test_an_unstarted_sequence_still_attempts_the_target(
+        self, monkeypatch, failure
+    ):
+        """A failed initial stage or closed task owner leaves the target due."""
+        recorded = []
+
+        async def _write(_self, _entity_id, percent):
+            recorded.append(percent)
+            return failure != "first_write" or percent != 15
+
+        monkeypatch.setattr(quirk, "maybe_set_sonoff_valve_percent", _write)
+        mock_self, trv_state = _make_valve_self(last_percent=8)
+        trv_state.valve_max_opening = 15
+        if failure == "closed_owner":
+            mock_self.task_manager.cancel_all()
+
+        assert await quirk.override_set_valve(mock_self, ENTITY, 7)
+
+        assert recorded == [15, 7]
+        assert "_trvzb_valve_bump_task" not in trv_state.extra
+
+    @pytest.mark.parametrize("completed_legs", [1, 2])
+    @pytest.mark.asyncio
+    async def test_a_lowered_cap_bounds_the_remaining_positions(
+        self, writes, monkeypatch, completed_legs
+    ):
+        """Pending positions obey a newly reduced opening limit."""
+        sleeps = 0
+        mock_self, trv_state = _make_valve_self(last_percent=8)
+        trv_state.valve_max_opening = 15
+
+        async def _delay(_seconds):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps == completed_legs:
+                trv_state.valve_max_opening = 3
+
+        monkeypatch.setattr(quirk.asyncio, "sleep", _delay)
+        assert await quirk.override_set_valve(mock_self, ENTITY, 7)
+        await trv_state.extra["_trvzb_valve_bump_task"]
+
+        assert writes == ([15, 3, 3] if completed_legs == 1 else [15, 5, 3])
+
+    @pytest.mark.parametrize(
+        "cap", [None, float("nan"), float("inf"), -float("inf"), 150]
+    )
+    @pytest.mark.asyncio
+    async def test_an_unbounded_cap_uses_the_physical_maximum(
+        self, writes, monkeypatch, cap
+    ):
+        """An absent or non-finite limit leaves the full physical range."""
+        monkeypatch.setattr(quirk, "_TRVZB_CLOSE_BUMP_DELAY_S", 0.0)
+        mock_self, trv_state = _make_valve_self(last_percent=95)
+        trv_state.valve_max_opening = cap
+
+        assert await quirk.override_set_valve(mock_self, ENTITY, 94)
+        await trv_state.extra["_trvzb_valve_bump_task"]
+
+        assert writes == [85, 94]
+
+    @pytest.mark.parametrize("target", [93, 96, 0], ids=["close", "open", "off"])
+    @pytest.mark.asyncio
+    async def test_a_new_target_supersedes_the_downward_intermediate(
+        self, writes, monkeypatch, target
+    ):
+        """A newer close, opening or OFF owns the pending sequence's target."""
+        monkeypatch.setattr(quirk, "_TRVZB_CLOSE_BUMP_DELAY_S", 0.0)
+        mock_self, trv_state = _make_valve_self(last_percent=95)
+        assert await quirk.override_set_valve(mock_self, ENTITY, 94)
+        deferred = trv_state.extra["_trvzb_valve_bump_task"]
+        await asyncio.sleep(0)
+        trv_state.last_valve_percent = 94
+
+        assert await quirk.override_set_valve(mock_self, ENTITY, target)
+        await _settle(deferred)
+
+        assert writes == [85, target]
+        assert "_trvzb_valve_bump_task" not in trv_state.extra
+
+    @pytest.mark.asyncio
+    async def test_a_refused_downward_intermediate_still_sends_the_target(
+        self, monkeypatch
+    ):
+        """A failed de-sticking attempt must not discard the target."""
+        recorded = []
+
+        async def _write(_self, _entity_id, percent):
+            recorded.append(percent)
+            return percent != 85
+
+        monkeypatch.setattr(quirk, "maybe_set_sonoff_valve_percent", _write)
+        mock_self, trv_state = _make_valve_self(last_percent=95)
+
+        assert await quirk.override_set_valve(mock_self, ENTITY, 94)
+
+        assert recorded == [85, 94]
+        assert "_trvzb_valve_bump_task" not in trv_state.extra
+
+    @pytest.mark.asyncio
+    async def test_maintenance_supersedes_the_downward_intermediate(
+        self, writes, monkeypatch
+    ):
+        """Maintenance retains its deliberate full opening despite the cap."""
+        monkeypatch.setattr(quirk, "_TRVZB_CLOSE_BUMP_DELAY_S", 0.0)
+        mock_self, trv_state = _make_valve_self(last_percent=20)
+        trv_state.valve_max_opening = 20
+        assert await quirk.override_set_valve(mock_self, ENTITY, 17)
+        deferred = trv_state.extra["_trvzb_valve_bump_task"]
+        mock_self.in_maintenance = True
+
+        assert await quirk.override_set_valve(mock_self, ENTITY, 100)
+        await _settle(deferred)
+
+        assert writes == [10, 100]
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_position_still_obeys_the_cap(self, writes):
+        """The first command respects the configured opening limit."""
+        mock_self, trv_state = _make_valve_self(last_percent=None)
+        trv_state.valve_max_opening = 20
+
+        assert await quirk.override_set_valve(mock_self, ENTITY, 100)
+
+        assert writes == [20]
+        assert "_trvzb_valve_bump_task" not in trv_state.extra
+
+
 class TestOverrideSetValve:
     """The de-sticking bump must never cost the requested position."""
 
