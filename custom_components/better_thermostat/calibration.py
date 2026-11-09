@@ -882,6 +882,9 @@ def _compute_mpc_v2_balance(
             heat_loss_rate=self.heat_loss_rate,
             preset=None if preset == MpcV2PlantPreset.AUTO else preset.value,
         )
+    # Each parallel radiator receives the group command; room heat adds up.
+    # Gain and radiator time constant still describe one representative unit.
+    plant_prior.coupling_rad_room *= len(self.real_trvs)
     v2_params = MpcV2Params(plant=plant_prior)
 
     outdoor_temperature = _get_current_outdoor_temperature(self)
@@ -1264,7 +1267,7 @@ def _compute_slow_balance(
     openings = [_confirmed_valve_percent(item) for item in self.real_trvs.values()]
     confirmed = [value for value in openings if value is not None]
     initial = sum(confirmed) / len(confirmed) if confirmed else 0.0
-    maximum = min(_get_trv_max_opening(self, eid) for eid in self.real_trvs)
+    maximum = math.floor(min(_get_trv_max_opening(self, eid) for eid in self.real_trvs))
     # Learning describes the actually held opening. Missing/unequal feedback,
     # actuator caps and external overrides discard the observation window.
     controller.observe_applied(self.clock.monotonic(), openings)

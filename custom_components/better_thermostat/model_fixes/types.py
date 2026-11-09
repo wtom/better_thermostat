@@ -72,6 +72,11 @@ class ModelFixTrv(Protocol):
         """Valve opening last commanded, or None before the first write."""
         ...
 
+    @property
+    def valve_max_opening(self) -> float:
+        """Configured maximum valve opening in percent."""
+        ...
+
 
 class QuirkTaskOwner(Protocol):
     """Where a quirk starts work that runs past the call that scheduled it."""
