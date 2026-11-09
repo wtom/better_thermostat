@@ -81,7 +81,9 @@ def test_window_and_supply_change_restart_observation():
     for t in range(10920, 21601, 60):
         result = adapter.step(context(t, supply_temperature=35))
     assert result is not None
-    assert result.valve_percent == 43
+    assert result.valve_percent is not None
+    assert result.valve_percent > 40
+    assert result.diagnostics["response"]["window_s"] >= 1800
 
 
 def test_unavailable_supply_does_not_train_baseline():
@@ -111,6 +113,7 @@ def test_target_change_discards_preceding_interval_from_mean():
     adapter.step(replace(context(100000, room=21.3), target_temperature=21.1))
     for t in range(100060, 110801, 60):
         result = adapter.step(replace(context(t, room=20.8), target_temperature=21.1))
+    assert result is not None
     assert result is not None
     assert result.valve_percent == 41
 
@@ -164,18 +167,16 @@ def test_normal_window_records_response_at_applied_not_new_opening():
 
 
 def test_gradual_supply_drift_cannot_be_learned_as_valve_response():
-    result = None
-    adapter = SlowCalibrationAdapter(hold_s=10800)
-    for t in range(0, 10801, 60):
-        result = adapter.step(context(t, supply_temperature=45 - 6 * t / 10800))
-    assert result is not None
-    assert result.valve_percent == 40
+    adapter = SlowCalibrationAdapter()
+    for t in range(0, 1801, 60):
+        adapter.step(context(t, supply_temperature=45 - 12 * t / 1800))
+    assert adapter.baseline == 40
     assert adapter.export_state() == {"baseline": 40}
-    # A complete stable window is required after the final reset.
-    for t in range(10860, 21601, 60):
-        result = adapter.step(context(t, supply_temperature=39))
-    assert result is not None
-    assert result.valve_percent == 43
+    # Once the supply mean settles, a fresh response window may correct again.
+    for t in range(1860, 9001, 60):
+        adapter.step(context(t, supply_temperature=33))
+    assert adapter.baseline > 40
+    assert adapter.export_state()["response"]["window_s"] >= 1800
 
 
 def test_gradual_weather_drift_restarts_normal_learning():
@@ -261,10 +262,12 @@ def test_context_return_reuses_point_but_recovery_never_teaches_one():
         adapter.step(
             replace(context(t, room=21.7, supply_temperature=45), target_temperature=22)
         )
-    assert adapter.baseline == 41
+    before_return = adapter.baseline
+    assert before_return is not None
+    assert before_return > 40
     result = adapter.step(context(21720, room=21, supply_temperature=45))
     assert result is not None
-    assert result.valve_percent == 40
+    assert result.valve_percent == before_return - 3
     assert result is not None
     assert result.diagnostics["reason"] == "reuse_holding_point"
     adapter.step(context(21780, room=20, supply_temperature=45))
@@ -382,7 +385,10 @@ def test_boiler_cycles_allow_normal_calibration_from_zero():
             )
         )
     assert any(r.diagnostics["reason"] == "calibrate_open" for r in results)
-    assert adapter.baseline == 3
+    corrections = [r for r in results if r.diagnostics["reason"] == "calibrate_open"]
+    assert len(corrections) > 1
+    assert all(r.diagnostics["response"]["window_s"] >= 1800 for r in corrections)
+    assert adapter.baseline == 3 * len(corrections)
     assert results[-1].diagnostics["recent_trend_k_per_h"] == 0
 
 
@@ -428,7 +434,7 @@ def test_boiler_cycles_allow_one_recovery_baseline_step():
     result = None
     for t in range(0, 7201, 60):
         supply = 28 if t % 1200 < 600 else 40
-        room = 20.7 if t < 3600 else 20.0 if t < 7140 else 20.9
+        room = 21.0 if t < 3600 else 20.0 if t < 7140 else 20.9
         result = adapter.step(context(t, room=room, supply_temperature=supply))
     assert result is not None
     assert adapter.baseline == 3
@@ -441,7 +447,7 @@ def test_sustained_supply_drift_during_recovery_invalidates_learning():
     adapter = SlowCalibrationAdapter(hold_s=10800)
     result = None
     for t in range(0, 7201, 60):
-        room = 20.7 if t < 3600 else 20.0 if t < 7200 else 20.9
+        room = 21.0 if t < 3600 else 20.0 if t < 7200 else 20.9
         supply = 35 if t < 4200 else 45
         result = adapter.step(context(t, room=room, supply_temperature=supply))
     assert result is not None
@@ -529,3 +535,103 @@ def test_sunshine_does_not_reopen_warm_room_during_recovery():
     )
     assert result.valve_percent == 0
     assert result.diagnostics["reason"] == "recovery_warm"
+
+
+@pytest.mark.parametrize("baseline", [1, 5])
+def test_persistent_deficit_probes_past_ineffective_small_openings(baseline):
+    """A cold, stagnant room must not spend hours adding single points."""
+    adapter = SlowCalibrationAdapter()
+    adapter.reset({"baseline": baseline})
+    result = None
+    for t in range(0, 1800, 60):
+        result = adapter.step(context(t, room=20.7, supply_temperature=35))
+        assert result.valve_percent == baseline
+    result = adapter.step(context(1800, room=20.7, supply_temperature=35))
+    assert result.valve_percent == baseline + 3
+    assert result.diagnostics["response"]["window_s"] == 1800
+    assert "holding_points" not in adapter.export_state()
+    # No rapid ratcheting on the next sensor update.
+    assert (
+        adapter.step(context(1860, room=20.7, supply_temperature=35)).valve_percent
+        == baseline + 3
+    )
+
+
+def test_warming_response_defers_probe_and_keeps_fine_corrections():
+    """A responding radiator gets time instead of another coarse increase."""
+    adapter = SlowCalibrationAdapter()
+    result = None
+    for t in range(0, 3601, 60):
+        # Still below band, but already warming: only one fine step at full window.
+        result = adapter.step(
+            context(t, room=20.67 + 0.06 * t / 3600, supply_temperature=35)
+        )
+        if t < 3600:
+            assert result.valve_percent == 40
+    assert result is not None
+    assert result.valve_percent == 41
+
+
+def test_adequately_warming_room_needs_no_probe():
+    """Measured convergence suppresses an increase even before reaching target."""
+    adapter = SlowCalibrationAdapter()
+    for t in range(0, 3601, 60):
+        result = adapter.step(
+            context(t, room=20.6 + 0.15 * t / 3600, supply_temperature=35)
+        )
+        assert result.valve_percent == 40
+
+
+def test_probe_requires_a_confirmed_held_opening():
+    """Failed actuator writes cannot justify repeated opening increments."""
+    adapter = SlowCalibrationAdapter()
+    for t in range(0, 1801, 60):
+        adapter.step(context(t, room=20.7, supply_temperature=35))
+    assert adapter.baseline == 43
+    for t in range(1860, 7201, 60):
+        adapter.controller.observe_applied(t, [40])
+        adapter.step(context(t, room=20.7, supply_temperature=35))
+    assert adapter.baseline == 43
+
+
+def test_probe_observation_restarts_after_interruption():
+    """DHW, missing observations and restarts cannot fill a response window."""
+    adapter = SlowCalibrationAdapter()
+    for t in range(0, 1741, 60):
+        adapter.step(context(t, room=20.7, supply_temperature=35))
+    adapter.controller.interrupt()
+    for t in range(1800, 3600, 60):
+        assert (
+            adapter.step(context(t, room=20.7, supply_temperature=35)).valve_percent
+            == 40
+        )
+    assert (
+        adapter.step(context(3600, room=20.7, supply_temperature=35)).valve_percent
+        == 43
+    )
+
+
+@pytest.mark.parametrize("supply", [None, 19.0])
+def test_no_accelerated_probe_without_available_heat(supply):
+    """Missing or cold supply is not evidence that a small opening is ineffective."""
+    adapter = SlowCalibrationAdapter()
+    for t in range(0, 3541, 60):
+        result = adapter.step(context(t, room=20.7, supply_temperature=supply))
+        assert result.valve_percent == 40
+    assert adapter.export_state() == {"baseline": 40}
+
+
+def test_recent_warming_after_cooling_prevents_extra_probe():
+    """A delayed response must stop escalation even when the full-window trend is flat."""
+    adapter = SlowCalibrationAdapter()
+    for t in range(0, 3600, 60):
+        room = 20.8 - 0.1 * t / 1800 if t <= 1800 else 20.7 + 0.15 * (t - 1800) / 1800
+        result = adapter.step(context(t, room=room, supply_temperature=35))
+        # The first probe is allowed while cooling. The delayed warming that
+        # follows must stop a second probe, not be mistaken for continued stall.
+        assert result.valve_percent is not None
+        assert result.valve_percent <= 43
+    assert (
+        adapter.step(context(3600, room=20.85, supply_temperature=35)).valve_percent
+        == 43
+    )

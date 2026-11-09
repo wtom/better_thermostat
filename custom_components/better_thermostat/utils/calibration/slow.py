@@ -45,7 +45,7 @@ class SlowOutput:
 
 
 class SlowCalibration:
-    """Hold a room opening for hours, with separate exceptional recovery."""
+    """Observe held openings, with response-aware corrections and recovery."""
 
     name = "slow"
     family = "valve"
@@ -351,9 +351,30 @@ class SlowCalibration:
                 self._sum_error += error * dt
                 self._elapsed += dt
                 age = ctx.t - self._start
-                if age >= self.hold_s and self._elapsed > 0.0:
-                    mean_error = self._sum_error / self._elapsed
-                    trend = (ctx.room_temperature - self._temperature) / (age / 3600)
+                mean_error = self._sum_error / self._elapsed if self._elapsed else 0.0
+                trend = (
+                    (ctx.room_temperature - self._temperature) / (age / 3600)
+                    if age > 0.0
+                    else 0.0
+                )
+                # Small commands can sit below a valve's effective range. With
+                # heat available and sustained deficit, probe sooner if BOTH
+                # the whole held interval and the recent trend show no adequate
+                # warming. This is bounded feedback, not dead-zone identification
+                # or a learned room time constant. Context/feedback resets above
+                # still require a fresh uninterrupted observation.
+                stalled_cold = (
+                    ctx.supply_temperature is not None
+                    and mean_error > 0.2
+                    and error > 0.2
+                    and trend <= 0.05
+                    and recent_trend is not None
+                    and recent_trend <= 0.05
+                )
+                observation_s = (
+                    min(self.hold_s, 1800.0) if stalled_cold else self.hold_s
+                )
+                if age >= observation_s and self._elapsed > 0.0:
                     self._response = {
                         **self._response,
                         "observed_opening": self.baseline,
@@ -368,7 +389,9 @@ class SlowCalibration:
                     # errors retain the coarse step; comfort recovery is separate.
                     correction_step = (
                         min(1.0, self.step_percent)
-                        if abs(mean_error) <= 0.35 and abs(error) <= 0.35
+                        if abs(mean_error) <= 0.35
+                        and abs(error) <= 0.35
+                        and not stalled_cold
                         else self.step_percent
                     )
                     self._response["calibration_step_percent"] = correction_step

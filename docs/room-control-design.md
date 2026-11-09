@@ -586,3 +586,24 @@ not a general PID-versus-slow ranking.
 Evidence: workspace artifacts/heizung/slow-weather-audit-20261109/.
 No curve setting, room target, actuator scope or other calibration mode changes
 are part of this patch. Continue the bounded pilot, not an all-room rollout.
+
+## Bounded response-aware correction — 2026-11-09 afternoon
+
+The next Flur/Küche iteration changes only normal cold calibration, not recovery
+or the actuator path. When heat is available, both mean and current deficit are
+above 0.2 K, and both the full held-window trend and the recent 15–30 minute
+trend are at most +0.05 K/h, a correction can occur after 30 minutes (or the
+configured shorter maximum window). That stalled-cold case uses the existing
+3-point coarse step even at a 0.25–0.35 K deficit. A room already warming faster
+keeps its configured observation window and the existing fine-step/projection
+rules. Settled holding points still require the full window and existing tests.
+
+This removes the one-point-per-hour crawl through ineffective openings without
+hardcoding a 7/8/9% minimum. It does **not** identify a valve dead zone, measure
+flow, or learn a room time constant. The 30-minute lower observation bound and
+0.05 K/h trend threshold are explicit pilot heuristics. Heat, DHW, context,
+feedback and restart interruption still discard incomplete observations.
+Recovery-to-baseline handover and use of internal TRV temperatures remain
+separate next iterations; neither is silently claimed fixed by this change.
+The WC controller and heating curve are outside this rollout. Existing Sonoff
+bump/pending/range logic is unchanged.
