@@ -607,3 +607,24 @@ Recovery-to-baseline handover and use of internal TRV temperatures remain
 separate next iterations; neither is silently claimed fixed by this change.
 The WC controller and heating curve are outside this rollout. Existing Sonoff
 bump/pending/range logic is unchanged.
+
+### Comfort-boundary clarification in the same pilot
+
+Wolfgang clarified that 0.2 K below target is already the maximum acceptable
+undershoot, not a normal holding band. The cold side of normal acceptance and
+correction is therefore tightened to 0.1 K (with numerical tolerance). A stable
+0.15 K deficit is corrected by 1 point after 30 minutes rather than recorded
+as equilibrium. At/predicted-to-reach 0.2 K, the stalled-cold correction uses
+3 points. Prediction is a 30-minute linear extrapolation using the worse of
+the whole-window and recent trends, not an identified room model. This
+supersedes the 0.2 K cold acceptance stated in the preceding iteration.
+
+The lower observation bound stays 30 minutes: a 15-minute candidate caused
+substantially more valve travel in closed-loop simulations and was rejected,
+not deployed. Severe cold remains owned by existing sustained recovery, so
+the new early path does not add a normal probe while recovery is being armed.
+Warm protection, full-window corrections and responding-room guards remain;
+holding-point reuse/storage and Sonoff actuation remain unchanged. The warm
+side remains 0.2 K. These thresholds cannot guarantee a physical 0.2 K ceiling
+with sensor resolution, delay, interrupted heat or insufficient radiator output.
+Assess time/depth below that ceiling during the bounded pilot.

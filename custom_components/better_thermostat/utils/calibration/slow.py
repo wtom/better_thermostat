@@ -363,14 +363,20 @@ class SlowCalibration:
                 # warming. This is bounded feedback, not dead-zone identification
                 # or a learned room time constant. Context/feedback resets above
                 # still require a fresh uninterrupted observation.
+                projected_cold_error = error - min(trend, recent_trend or 0.0) * 0.5
+                at_cold_limit = projected_cold_error >= 0.2 - 1e-6
                 stalled_cold = (
                     ctx.supply_temperature is not None
-                    and mean_error > 0.2
-                    and error > 0.2
+                    and mean_error > 0.1 + 1e-6
+                    and 0.1 + 1e-6 < error < 0.5
                     and trend <= 0.05
                     and recent_trend is not None
                     and recent_trend <= 0.05
                 )
+                # 0.2 K below target is a comfort limit, not a holding band.
+                # Probe gently within that limit; increase the step when the
+                # trend predicts reaching it within 30 minutes. Keep enough
+                # observation time for a delayed radiator response.
                 observation_s = (
                     min(self.hold_s, 1800.0) if stalled_cold else self.hold_s
                 )
@@ -391,14 +397,14 @@ class SlowCalibration:
                         min(1.0, self.step_percent)
                         if abs(mean_error) <= 0.35
                         and abs(error) <= 0.35
-                        and not stalled_cold
+                        and not (stalled_cold and at_cold_limit)
                         else self.step_percent
                     )
                     self._response["calibration_step_percent"] = correction_step
                     # Correcting windows describe response, not equilibrium.
                     if (
-                        abs(mean_error) <= 0.2
-                        and abs(error) <= 0.2
+                        -0.2 <= mean_error <= 0.1 + 1e-6
+                        and -0.2 <= error <= 0.1 + 1e-6
                         and abs(trend) <= 0.05
                         and ctx.supply_temperature is not None
                     ):
@@ -414,7 +420,7 @@ class SlowCalibration:
                     # Project one hour ahead: do not add heat to an adequately
                     # warming room, nor remove it while it is cooling to target.
                     projected_error = error - trend
-                    if mean_error > 0.2 and projected_error > 0.2:
+                    if mean_error > 0.1 + 1e-6 and projected_error > 0.1 + 1e-6:
                         self.baseline = min(100.0, self.baseline + correction_step)
                         reason = "calibrate_open"
                     elif mean_error < -0.2 and projected_error < -0.2:

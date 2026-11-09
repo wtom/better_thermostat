@@ -40,7 +40,7 @@ def test_warming_room_does_not_receive_extra_heat():
     result = None
     adapter = SlowCalibrationAdapter(hold_s=10800)
     for t in range(0, 10801, 60):
-        result = adapter.step(context(t, room=20.51 + 0.29 * t / 10800))
+        result = adapter.step(context(t, room=20.51 + 0.31 * t / 10800))
     assert result is not None
     assert result.valve_percent == 40
 
@@ -635,3 +635,40 @@ def test_recent_warming_after_cooling_prevents_extra_probe():
         adapter.step(context(3600, room=20.85, supply_temperature=35)).valve_percent
         == 43
     )
+
+
+def test_cold_limit_is_not_an_accepted_holding_band():
+    """A persistent 0.15 K deficit needs correction before the 0.2 K limit."""
+    adapter = SlowCalibrationAdapter()
+    result = None
+    for t in range(0, 1801, 60):
+        result = adapter.step(context(t, room=20.85, supply_temperature=35))
+    assert result is not None
+    assert result.valve_percent == 41
+    assert "holding_points" not in adapter.export_state()
+
+
+def test_at_cold_limit_does_not_wait_for_half_degree_emergency():
+    """At the comfort boundary a stalled room gets a bounded coarse correction."""
+    adapter = SlowCalibrationAdapter()
+    for t in range(0, 1800, 60):
+        assert (
+            adapter.step(context(t, room=20.8, supply_temperature=35)).valve_percent
+            == 40
+        )
+    assert (
+        adapter.step(context(1800, room=20.8, supply_temperature=35)).valve_percent
+        == 43
+    )
+
+
+def test_falling_room_anticipates_the_cold_limit():
+    """Crossing 0.2 K within the next half hour should trigger before it happens."""
+    adapter = SlowCalibrationAdapter()
+    result = None
+    for t in range(0, 1801, 60):
+        result = adapter.step(
+            context(t, room=20.9 - 0.05 * t / 1800, supply_temperature=35)
+        )
+    assert result is not None
+    assert result.valve_percent == 43
