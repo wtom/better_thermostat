@@ -1267,7 +1267,7 @@ def _compute_slow_balance(
     openings = [_confirmed_valve_percent(item) for item in self.real_trvs.values()]
     confirmed = [value for value in openings if value is not None]
     initial = sum(confirmed) / len(confirmed) if confirmed else 0.0
-    maximum = min(_get_trv_max_opening(self, eid) for eid in self.real_trvs)
+    maximum = math.floor(min(_get_trv_max_opening(self, eid) for eid in self.real_trvs))
     # Learning describes the actually held opening. Missing/unequal feedback,
     # actuator caps and external overrides discard the observation window.
     controller.observe_applied(self.clock.monotonic(), openings)

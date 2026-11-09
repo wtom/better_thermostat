@@ -1,6 +1,9 @@
 # Room control and low-temperature heating: development brief
 
-Status: independent experimental production mode integrated and tested; no controller deployed to the house. See iteration 8 for current status.
+Status: experimental mode is used in the bounded Flur/Küche pilot. The latest
+candidate is described in **Unified 30-minute correction** below; it is not yet
+activated in the house. Earlier dated sections are development history, not
+additional requirements on the current implementation.
 
 ## Goal
 
@@ -607,3 +610,66 @@ Recovery-to-baseline handover and use of internal TRV temperatures remain
 separate next iterations; neither is silently claimed fixed by this change.
 The WC controller and heating curve are outside this rollout. Existing Sonoff
 bump/pending/range logic is unchanged.
+
+## Unified 30-minute correction — 2026-11-09 review follow-up
+
+The full audit reproduced timer starvation during normal supply cycles, a
+stalled recovery state, reuse of unconfirmed holding-point hints, and a
+fractional command/feedback mismatch. The replacement uses one working opening
+and one correction path. There is no separate recovery command to fall back
+from, and saved holding points are observations, not automatically reused
+commands.
+
+- Review both cold and warm rooms after 1800 seconds of confirmed actuation.
+  Ordinary supply/outdoor changes do not restart that clock or erase the room
+  trend. Supply/context stability only qualifies stored equilibrium evidence.
+- Startup, window and target events require a fresh evaluation. Window/OFF,
+  unavailable heat and existing dispatcher gates retain control authority;
+  incomplete observations are not learned across those interruptions.
+- Project the measured 15–30 minute room trend over the next interval. Correct
+  projected error beyond 0.1 K; use 1 percentage point near target and initially
+  up to 3 elsewhere. Halve the step after direction changes, down to 1. These
+  are pilot heuristics, not identified gain, delay, or a bracketed bisection.
+- Keep commands on the integer writer grid and wait for command feedback.
+  Missing echoes, long measurement gaps and backwards time must not create
+  repeated speculative opening steps. A lower target while closed must not
+  reopen into an already warm room.
+- Report observation age, next review, feedback confirmation and reset reason.
+  A working opening is not a learned holding point; 0.15 K stationary deficit
+  is not accepted as equilibrium. The user's 0.2 K under-temperature limit is
+  a comfort requirement, not an acceptable permanent learning band.
+
+The Sonoff actuator correction remains separate from room control. Normal
+20→30→17 is preserved. Near the upper stop, 95→85→94 supplies the closing stroke
+without exceeding 100. A capped 8→15→5→7 sequence respects a 15% cap. A cap below
+10 cannot physically allow a 10-point stroke. Existing cancellation and
+failure semantics remain in force; commanded percentages are not measured
+mechanical valve positions.
+
+### Evidence and unresolved limits
+
+The broad benchmark/dispatch/writer/integration selection passed 814 tests.
+After fixing the additional measurement-gap feedback defect found by review,
+the affected 69 tests and whole-project type checking passed. An integration
+test advances the real HA control scheduler through the half-hour boundary,
+then window/target changes, and checks the adapter writes rather than only
+controller recommendations.
+
+Four independent three-day RC3 comparisons use cycling 33–47°C supply,
+quantized/delayed sensing and rounded/delayed command feedback. Final-day mean
+absolute error and valve travel improve in all four. This is not a general
+comfort success: the high-lag scenario's whole-run maximum deficit worsens
+from 0.823 K to 1.857 K. Increasing the step to 6 points worsens overshoot and
+is rejected. No 0.2 K guarantee, identified room dynamics, gas-saving proof or
+live improvement is claimed.
+
+Heat arriving from adjoining rooms belongs in the measured net room trend.
+It does not establish which radiator supplied it or the optimal house-wide
+distribution. Minimizing each room's own valve opening is not the objective;
+all rooms meeting target at low supply remains the objective. This patch adds
+no cross-room heat-transfer model or automatic heating-curve control.
+
+Evidence: workspace `artifacts/heizung/slow-fix-20261109/`. Live activation needs
+a controlled HA restart and actual-write/30-minute trajectory verification.
+Do not silently interrupt the separate WC pilot: its command previously reset
+after a whole-HA restart. Rollback is the pre-change revision `56ad1bd2`.
