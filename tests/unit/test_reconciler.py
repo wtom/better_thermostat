@@ -1050,7 +1050,7 @@ class TestOffsetReconcileHandoff:
 )
 @pytest.mark.asyncio
 async def test_sonoff_pair_reconciles_and_rewrites(opening, closing, pending, diverged):
-    """A lost closing write retries even when the opening and cache agree."""
+    """Both Sonoff command numbers must converge on complementary targets."""
     from custom_components.better_thermostat.model_fixes import TRVZB
 
     bt = _make_bt()
