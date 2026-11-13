@@ -260,6 +260,17 @@ class ValveChannelQuirk(Protocol):
 
 
 @runtime_checkable
+class ValveFeedbackQuirk(Protocol):
+    """A valve quirk with readable command channels."""
+
+    def valve_target_diverges(
+        self, host: ModelFixHost, entity_id: str, percent: int, /
+    ) -> bool:
+        """Whether a readable valve command differs from the target."""
+        ...
+
+
+@runtime_checkable
 class ExternalTemperatureQuirk(Protocol):
     """A quirk that mirrors the room temperature into its device."""
 
