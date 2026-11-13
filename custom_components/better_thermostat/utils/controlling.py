@@ -68,6 +68,7 @@ from custom_components.better_thermostat.model_fixes.model_quirks import (
     trv_report_is_unreadable,
     trv_state_unknown_as_available,
 )
+from custom_components.better_thermostat.model_fixes.types import ValveFeedbackQuirk
 from custom_components.better_thermostat.utils.advanced_flags import advanced_flag
 from custom_components.better_thermostat.utils.calibration.pid import resolve_unique_id
 from custom_components.better_thermostat.utils.const import (
@@ -602,17 +603,18 @@ def _offset_diverges(self: BetterThermostat, trv: Trv) -> bool:
 
 
 def _valve_diverges(self: BetterThermostat, trv: Trv) -> bool:
-    """Whether the valve-position entity left the commanded percentage.
-
-    Only the adapter-written number entity is verifiable; quirk-driven
-    valve writes have no readable target.
-    """
+    """Whether a readable valve command left the commanded percentage."""
     if not trv.capabilities().supports_valve_write:
         return False
-    if not (trv.valve_position_entity and trv.valve_position_writable is True):
-        # Quirk-driven valve writes have no readable target to verify.
-        return False
     if trv.last_valve_percent is None:
+        return False
+    if trv.last_valve_method == "override" and isinstance(
+        trv.model_quirks, ValveFeedbackQuirk
+    ):
+        return trv.model_quirks.valve_target_diverges(
+            self, trv.entity_id, round(float(trv.last_valve_percent))
+        )
+    if not (trv.valve_position_entity and trv.valve_position_writable is True):
         return False
     state = self.hass.states.get(trv.valve_position_entity)
     if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):

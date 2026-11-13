@@ -1035,3 +1035,68 @@ class TestOffsetReconcileHandoff:
             await control_trv(bt, "climate.trv")
 
         set_off.assert_awaited_once_with(bt, "climate.trv", 2.0)
+
+
+@pytest.mark.parametrize(
+    ("opening", "closing", "pending", "diverged"),
+    [
+        ("0", "0", False, True),
+        ("30", "71", False, True),
+        ("0", "100", False, False),
+        ("30", "70", False, False),
+        ("10", "90", True, False),
+        ("unknown", "100", False, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_sonoff_pair_reconciles_and_rewrites(opening, closing, pending, diverged):
+    """A lost closing write retries even when the opening and cache agree."""
+    from custom_components.better_thermostat.model_fixes import TRVZB
+
+    bt = _make_bt()
+    trv = bt.real_trvs["climate.trv"]
+    trv.model_quirks = TRVZB._Surface()
+    trv.last_valve_method = "override"
+    trv.last_valve_percent = 30 if opening == "30" else 0
+    if pending:
+        task = Mock()
+        task.done.return_value = False
+        trv.extra["_trvzb_valve_bump_task"] = task
+    climate = bt.hass.states.get.return_value
+    states = {
+        "climate.trv": climate,
+        "number.open": State("number.open", opening),
+        "number.close": State("number.close", closing),
+    }
+    bt.hass.states.get.side_effect = states.get
+    with patch.object(
+        TRVZB,
+        "_valve_number_candidates",
+        return_value=(["number.open"], ["number.close"], []),
+    ):
+        await reconcile_tick(bt)
+        assert bt.control_queue_task.put_nowait.called is diverged
+        from custom_components.better_thermostat.utils.controlling import (
+            _valve_at_target,
+        )
+
+        assert (
+            _valve_at_target(bt, "climate.trv", trv.last_valve_percent) is not diverged
+        )
+        if diverged:
+            from custom_components.better_thermostat.adapters.delegate import set_valve
+
+            bt.context = None
+            bt.hass.services.async_call = AsyncMock()
+            assert await set_valve(bt, "climate.trv", trv.last_valve_percent)
+            payloads = [
+                call.args[2] for call in bt.hass.services.async_call.await_args_list
+            ]
+            assert {
+                "entity_id": "number.open",
+                "value": trv.last_valve_percent,
+            } in payloads
+            assert {
+                "entity_id": "number.close",
+                "value": 100 - trv.last_valve_percent,
+            } in payloads
