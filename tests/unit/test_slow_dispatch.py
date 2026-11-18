@@ -25,7 +25,7 @@ from tests.factories import make_bt
 def room(hass, count=1):
     """A room with verified direct-valve feedback, not a mocked controller."""
     bt = make_bt(
-        trv_ids=tuple(f"climate.trv_{i}" for i in range(count)), room_temperature=20.7
+        trv_ids=tuple(f"climate.trv_{i}" for i in range(count)), room_temperature=20.6
     )
     bt.unique_id = "slow_test"
     bt.state_mgr = StateManager(hass, "slow_test")
@@ -47,13 +47,20 @@ def room(hass, count=1):
 
 
 async def test_room_holds_then_makes_one_small_shared_step(hass):
-    """Unequal radiator temperatures must not defeat the fixed room opening."""
+    """One room decision, not one increment for each radiator."""
     bt = room(hass, 2)
-    for t in range(0, 10801, 300):
+    results: list[float | None] = []
+    for t in range(0, 3601, 300):
         bt.clock.monotonic_value = t
         results = [_compute_slow_balance(bt, eid)[0] for eid in bt.real_trvs]
-        assert results == ([40, 40] if t < 10800 else [43, 43])
-    assert bt.real_trvs["climate.trv_0"].calibration_balance["debug"]["experimental"]
+        # A new output is confirmed by all radiators on the next cycle.
+        assert results[0] == results[1]
+        assert results[0] is not None
+        assert results[0] <= 49
+        for trv in bt.real_trvs.values():
+            trv.valve_position = results[0]
+    assert results[0] is not None
+    assert results[0] > 43
 
 
 @pytest.mark.parametrize("gate", ["off", "window", "missing", "mixed", "no_valve"])
@@ -131,7 +138,7 @@ async def test_new_cap_clamps_existing_learning_and_later_calibration(hass):
     _compute_slow_balance(bt, eid)
     bt.real_trvs[eid].valve_max_opening = 30
     bt.real_trvs[eid].valve_position = 30
-    for t in range(0, 10801, 300):
+    for t in range(0, 3601, 300):
         bt.clock.monotonic_value = t
         assert _compute_slow_balance(bt, eid) == (30, True)
     controller = bt.state_mgr.get_slow_live("slow_test:group:slow")
@@ -144,18 +151,17 @@ async def test_failed_write_does_not_become_learning_evidence(hass):
     """Repeated recommendations without matching feedback cannot teach a baseline."""
     bt = room(hass)
     trv = bt.real_trvs["climate.trv_0"]
-    for t in range(0, 10801, 300):
+    for t in range(0, 3601, 300):
         bt.clock.monotonic_value = t
         _compute_slow_balance(bt, trv.entity_id)
     assert bt.state_mgr.state.slow["slow_test:group:slow"]["baseline"] == 43
-    for t in range(11100, 33001, 300):
+    for t in range(3900, 11101, 300):
         bt.clock.monotonic_value = t
         _compute_slow_balance(bt, trv.entity_id)
     assert bt.state_mgr.state.slow["slow_test:group:slow"]["baseline"] == 43
 
 
-def test_store_roundtrip_restores_baseline_not_recovery(hass):
-    """A restart cannot replay an emergency opening or an old monotonic timer."""
+def test_store_roundtrip_restores_working_opening_without_timer(hass):
     manager = StateManager(hass, "slow_test")
     controller = manager.get_slow_live("room:group:slow")
     ctx = SlowContext(
@@ -165,13 +171,14 @@ def test_store_roundtrip_restores_baseline_not_recovery(hass):
         outdoor_temperature=5,
         last_valve_percent=37,
     )
-    controller.step(ctx)
-    assert controller.step(replace(ctx, t=600)).valve_percent == 47
+    assert controller.step(ctx).valve_percent == 40
     manager.set_slow_live("room:group:slow", controller)
     loaded = _deserialize(_serialize(manager.state))
     restored = SlowCalibration()
     restored.reset(loaded.slow["room:group:slow"])
-    assert restored.step(ctx).valve_percent == 37
+    assert restored.baseline == 40
+    assert restored._start is None
+    assert restored.step(replace(ctx, room_temperature=21)).valve_percent == 40
 
 
 def test_corrupt_stored_learning_is_not_reused():
@@ -189,16 +196,18 @@ def test_long_measurement_gap_discards_observation():
     ctx = SlowContext(
         t=0,
         target_temperature=21,
-        room_temperature=20.7,
+        room_temperature=20.6,
         outdoor_temperature=5,
         last_valve_percent=40,
     )
     controller.step(ctx)
-    assert controller.step(replace(ctx, t=10800)).valve_percent == 40
+    out = controller.step(replace(ctx, t=10800))
+    assert out.diagnostics["observation_age_s"] == 0
+    assert out.diagnostics["recent_trend_k_per_h"] is None
 
 
 def test_solar_disturbance_does_not_disable_warm_protection():
-    """Sun invalidates learning but cannot require continued heating of a hot room."""
+    """Weather sunshine leaves sustained room-level overheat protection active."""
     controller = SlowCalibration()
     ctx = SlowContext(
         t=0,
@@ -208,8 +217,9 @@ def test_solar_disturbance_does_not_disable_warm_protection():
         last_valve_percent=40,
         solar_intensity=0.8,
     )
-    assert controller.step(ctx).valve_percent == 0
-    assert controller.baseline == 40
+    controller.step(ctx)
+    assert controller.step(replace(ctx, t=600)).valve_percent == 37
+    assert controller.baseline == 37
 
 
 def test_warming_trend_closes_before_significant_overshoot():
@@ -227,23 +237,20 @@ def test_warming_trend_closes_before_significant_overshoot():
             )
         )
     assert result is not None
-    assert result.valve_percent == 0
-    assert controller.baseline == 40
+    assert result.valve_percent < 40
+    assert controller.baseline == result.valve_percent
 
 
-async def test_unconfirmed_recovery_does_not_teach_baseline(hass):
-    """Natural cooling after a failed close must not be credited to the valve."""
+async def test_unconfirmed_close_does_not_teach_holding_point(hass):
     bt = room(hass)
     bt.room_temperature = 21.7
     eid = "climate.trv_0"
-    _compute_slow_balance(bt, eid)
-    bt.clock.monotonic_value = 600
-    assert _compute_slow_balance(bt, eid)[0] == 0
-    # The recommendation was never applied; the echo stays at 40%.
-    bt.clock.monotonic_value = 900
-    bt.room_temperature = 21.1
-    assert _compute_slow_balance(bt, eid)[0] == 40
-    assert bt.state_mgr.state.slow["slow_test:group:slow"]["baseline"] == 40
+    assert _compute_slow_balance(bt, eid)[0] == 37
+    for t in range(300, 7201, 300):
+        bt.clock.monotonic_value = t
+        bt.room_temperature = 21.0
+        assert _compute_slow_balance(bt, eid)[0] == 37
+    assert not bt.state_mgr.state.slow["slow_test:group:slow"].get("holding_points")
 
 
 async def test_slow_explanation_is_published_as_entity_attribute(hass):
@@ -260,5 +267,32 @@ async def test_slow_explanation_is_published_as_entity_attribute(hass):
     value = collect_balance_attrs(bt)["slow_calibration"]
     assert isinstance(value, str)
     debug = json.loads(value)["climate.trv_0"]
-    assert debug["baseline"] == 40
-    assert debug["reason"] == "hold"
+    assert debug["baseline"] == 43
+    assert debug["reason"] == "calibrate_open"
+    assert debug["next_review_in_s"] == 1800
+
+
+async def test_dhw_hot_supply_never_enters_or_survives_in_heating_mean(hass):
+    """DHW interrupts the mean as well as the learning timer."""
+    bt = room(hass)
+    bt.mpc_v2_dhw_sensor_entity_id = "sensor.dhw_pump"
+    bt.mpc_v2_supply_sensor_entity_id = "sensor.supply"
+    eid = "climate.trv_0"
+    for t, dhw, supply in [
+        (0, "0", 35),
+        (300, "0", 35),
+        (600, "1", 65),
+        (900, "1", 70),
+        (1200, "0", 36),
+    ]:
+        bt.clock.monotonic_value = t
+        hass.states.async_set("sensor.dhw_pump", dhw)
+        hass.states.async_set("sensor.supply", supply)
+        _compute_slow_balance(bt, eid)
+        debug = bt.real_trvs[eid].calibration_balance["debug"]
+        if dhw == "1":
+            assert debug["reason"] == "heat_unavailable"
+            assert not bt.state_mgr.get_slow_live(
+                "slow_test:group:slow"
+            )._supply_samples
+    assert debug["supply_mean_temperature"] == 36

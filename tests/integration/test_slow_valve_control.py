@@ -22,8 +22,8 @@ from .device_profiles import SLOW_VALVE_TRV
 
 
 @pytest.mark.parametrize("fake_trv", [SLOW_VALVE_TRV], indirect=True)
-async def test_slow_recovery_write_and_off_reach_device(hass, fake_trv):
-    """A recovery recommendation must open the number entity; OFF closes it."""
+async def test_slow_immediate_write_and_off_reach_device(hass, fake_trv):
+    """An immediate room correction must open the number entity; OFF closes it."""
     set_room_sensor(hass, 19.0)
     entry = make_entry(fake_trv.profile)
     await setup_entry(hass, entry)
@@ -90,7 +90,7 @@ async def test_slow_learning_survives_store_flush_and_entry_reload(
     key = f"{bt.unique_id}:group:slow"
     controller = bt.state_mgr.get_slow_live(key)
     controller.reset({"baseline": 37.0})
-    for t in range(0, 10801, 300):
+    for t in range(0, 3601, 300):
         controller.step(
             SlowContext(
                 t=t,
@@ -103,8 +103,8 @@ async def test_slow_learning_survives_store_flush_and_entry_reload(
         )
     learned = controller.export_state()
     assert learned["baseline"] == 37.0
-    assert len(learned["holding_points"]) == 1
-    assert learned["response"]["window_s"] == 10800
+    assert len(learned["holding_points"]) == 2
+    assert learned["response"]["window_s"] == 1800
     bt.state_mgr.set_slow_live(key, controller)
     bt.schedule_save_state()
     # Unload must flush the pending delayed save; the next setup owns a new
@@ -121,4 +121,87 @@ async def test_slow_learning_survives_store_flush_and_entry_reload(
     assert restored is not controller
     assert restored.export_state() == learned
     assert restored._start is None
-    assert restored._recovery is None
+    assert restored._previous is None
+
+
+@pytest.mark.parametrize("fake_trv", [SLOW_VALVE_TRV], indirect=True)
+async def test_half_hour_correction_window_and_target_events_reach_writer(
+    hass, fake_trv
+):
+    """Exercise scheduler -> room loop -> adapter, not just controller numbers."""
+    from .conftest import WINDOW_ID
+
+    set_room_sensor(hass, 19.6)
+    hass.states.async_set(WINDOW_ID, "off", {"device_class": "window"})
+    entry = make_entry(fake_trv.profile, with_window=True)
+    await setup_entry(hass, entry)
+    bt = await wait_for_startup(hass, entry)
+    bt.clock = FakeClock(monotonic_value=bt.clock.monotonic())
+    assert bt.state_mgr is not None
+    controller = bt.state_mgr.get_slow_live(f"{bt.unique_id}:group:slow")
+    valve = fake_trv.valve_number
+    with patch(WRITE_BUDGET, 0.0):
+        await hass.services.async_call(
+            "climate",
+            "set_temperature",
+            {"entity_id": BT_ENTITY, "temperature": 20.0},
+            blocking=True,
+        )
+        request_control_cycle(bt)
+        assert await wait_for(
+            hass,
+            lambda: (
+                controller._previous is not None
+                and controller._previous.target_temperature == 20.0
+            ),
+        )
+        assert await wait_for(
+            hass,
+            lambda: (
+                valve.set_value_calls
+                and valve.set_value_calls[-1] == controller.baseline
+            ),
+        )
+        first = valve.set_value_calls[-1]
+        assert first > 0
+        # Each minute is observed. A single30min time jump would exercise the
+        # outage reset rather than prove the scheduled correction.
+        for minute in range(1, 32):
+            bt.clock.advance(60)
+            now = bt.clock.monotonic()
+            request_control_cycle(bt)
+            assert await wait_for(
+                hass,
+                lambda: (
+                    controller._previous is not None and controller._previous.t == now
+                ),
+            )
+            if minute < 30:
+                assert valve.set_value_calls[-1] == first
+        assert await wait_for(hass, lambda: valve.set_value_calls[-1] > first)
+        assert (
+            float(hass.states.get(valve.entity_id).state) == valve.set_value_calls[-1]
+        )
+
+        hass.states.async_set(WINDOW_ID, "on", {"device_class": "window"})
+        assert await wait_for(hass, lambda: valve.set_value_calls[-1] == 0)
+        # Lower the target while ventilation has closed the valve. Closing the
+        # window must not replay the old heating opening into an above-target room.
+        await hass.services.async_call(
+            "climate",
+            "set_temperature",
+            {"entity_id": BT_ENTITY, "temperature": 19.0},
+            blocking=True,
+        )
+        hass.states.async_set(WINDOW_ID, "off", {"device_class": "window"})
+        bt.clock.advance(60)
+        request_control_cycle(bt)
+        assert await wait_for(
+            hass,
+            lambda: (
+                controller._previous is not None
+                and controller._previous.target_temperature == 19.0
+            ),
+        )
+        assert valve.set_value_calls[-1] == 0
+        assert controller._response.get("target_temperature") != 19.0
