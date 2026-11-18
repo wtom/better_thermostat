@@ -23,6 +23,8 @@ _LOGGER = logging.getLogger(__name__)
 # MPC operates on fixed 5-minute steps and a 6-step horizon.
 MPC_STEP_SECONDS = 300.0
 MPC_HORIZON_STEPS = 6
+# Disable forced cooling; passive gain/loss learning remains enabled.
+MPC_FORCED_CALIBRATION_PROBABILITY = 0.0
 # Adaptation learns only from a room-temperature change of at least this size
 # (quantised sensors) and at most this rate (sensor jumps, transients).
 MPC_TEMP_CHANGE_THRESHOLD_K = 0.05
@@ -857,16 +859,20 @@ def compute_mpc(
 
         # --- FORCED LOSS CALIBRATION ---
         # "Hybrid Learning": Use random forced calibration to get high-confidence loss samples.
-        # Trigger: current >= target. Probability: decays with number of samples.
+        # Trigger: current >= target, if forced calibration is enabled.
         # Action: Force valve closed until current < target - hysteresis.
         calib_hysteresis = 0.2
         if state.is_calibration_active:
-            if inp.room_temperature <= (inp.target_temperature - calib_hysteresis):
+            if MPC_FORCED_CALIBRATION_PROBABILITY <= 0 or inp.room_temperature <= (
+                inp.target_temperature - calib_hysteresis
+            ):
                 state.is_calibration_active = False
                 _LOGGER.info(
-                    "better_thermostat %s: Calibration finished (temp reached target - %.1fvK). Resuming control.",
+                    "better_thermostat %s: Calibration finished (%s). Resuming control.",
                     name,
-                    calib_hysteresis,
+                    "forced calibration disabled"
+                    if MPC_FORCED_CALIBRATION_PROBABILITY <= 0
+                    else "cooling threshold reached",
                 )
             else:
                 percent = 0.0
@@ -875,8 +881,7 @@ def compute_mpc(
         # Trigger condition: Overheated/Reached target
         # Check random chance if we have "enough" heat (delta_kelvin <= 0 means we are at/above target)
         elif inp.room_temperature >= inp.target_temperature:
-            # Chance decays with experience: 1 (100%), 0.5, ... but min 5%
-            chance = max(0.05, 1.0 / (state.loss_learn_count + 1))
+            chance = MPC_FORCED_CALIBRATION_PROBABILITY
             if random.random() < chance:
                 state.is_calibration_active = True
                 percent = 0.0

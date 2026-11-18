@@ -1182,8 +1182,9 @@ class TestPerfCurveSampling:
 class TestForcedCalibration:
     """Tests for forced loss calibration (random valve-off episodes)."""
 
-    def test_calibration_ends_when_temperature_drops_below_threshold(self):
+    def test_calibration_ends_when_temperature_drops_below_threshold(self, monkeypatch):
         """Active calibration should end when temperature < target - hysteresis."""
+        monkeypatch.setattr(mpc_module, "MPC_FORCED_CALIBRATION_PROBABILITY", 1.0)
         params = _default_params()
         _compute(
             _inp(key="calend", room_temperature=22.5, target_temperature=22.0), params
@@ -1197,8 +1198,9 @@ class TestForcedCalibration:
         )
         assert state.is_calibration_active is False
 
-    def test_calibration_keeps_valve_at_zero(self):
+    def test_calibration_keeps_valve_at_zero(self, monkeypatch):
         """During active calibration, valve should be forced to 0."""
+        monkeypatch.setattr(mpc_module, "MPC_FORCED_CALIBRATION_PROBABILITY", 1.0)
         params = _default_params()
         _compute(
             _inp(key="cal0", room_temperature=22.1, target_temperature=22.0), params
@@ -1211,32 +1213,43 @@ class TestForcedCalibration:
         )
         assert result.valve_percent == 0
 
-    def test_calibration_triggered_stochastically(self):
-        """When at/above target, calibration may be triggered (probability-based)."""
-        params = _default_params()
-        triggered = False
-        for i in range(50):
-            key = f"cal_stoch_{i}"
-            _compute(
-                _inp(key=key, room_temperature=22.5, target_temperature=22.0), params
+    def test_calibration_triggered_when_enabled(self, monkeypatch):
+        """Explicitly enabled forced calibration can close the valve at target."""
+        monkeypatch.setattr(mpc_module, "MPC_FORCED_CALIBRATION_PROBABILITY", 1.0)
+        with patch.object(mpc_module.random, "random", return_value=0.0):
+            result = _compute(
+                _inp(key="cal_enabled", room_temperature=22.0), _default_params()
             )
-            state = _STATES[key]
-            if state.is_calibration_active:
-                triggered = True
-                break
-        # With 50 tries and initial chance=1.0, it should trigger at least once
-        assert triggered, "Forced calibration was never triggered in 50 attempts"
+        assert _STATES["cal_enabled"].is_calibration_active is True
+        assert result.valve_percent == 0
 
-    def test_calibration_chance_decays_with_experience(self):
-        """Calibration chance should decay as loss_learn_count increases."""
-        params = _default_params()
-        _compute(_inp(key="cal_decay"), params)
-        state = _STATES["cal_decay"]
-        state.loss_learn_count = 100
-        # chance = max(0.05, 1/(100+1)) ≈ 0.01 -> clamped to 0.05
-        # Very unlikely to trigger in a single attempt
-        # (This is a probabilistic test — just verify the state is reasonable)
-        assert state.loss_learn_count == 100
+    @pytest.mark.parametrize("loss_learn_count", [0, 500])
+    @pytest.mark.parametrize("room_temperature", [22.0, 22.01])
+    def test_default_probability_preserves_at_target_demand(
+        self, loss_learn_count, room_temperature
+    ):
+        """Maintaining target temperature must not trigger forced cooling."""
+        state = _MpcState(loss_learn_count=loss_learn_count)
+        with patch.object(mpc_module.random, "random", return_value=0.0):
+            result = _run_at(
+                _NOW, _inp(room_temperature=room_temperature), _default_params(), state
+            )
+        demand = result.debug["mpc_u_abs_pct"]
+        assert isinstance(demand, int | float)
+        assert demand > 0
+        assert result.valve_percent > 0
+        assert state.is_calibration_active is False
+
+    def test_default_probability_cancels_legacy_active_phase(self):
+        """A saved forced calibration must not delay comfort recovery."""
+        state = deserialize_mpc({"is_calibration_active": True, "last_percent": 0.0})
+        assert state.is_calibration_active is True
+
+        result = _run_at(_NOW, _inp(room_temperature=21.9), _default_params(), state)
+
+        assert result.valve_percent > 0
+        assert state.is_calibration_active is False
+        assert "calib_active" not in result.debug
 
 
 # ===================================================================

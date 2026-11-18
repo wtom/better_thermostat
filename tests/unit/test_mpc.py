@@ -786,7 +786,8 @@ class TestMPCController:
                 room_temperature=current_rounded,
                 # temperature_slope_K_per_min=slope,
             )
-            result, _ = compute_mpc(inp, params)
+            with patch(f"{_MPC}.time", return_value=1_800_000_000.0 + step * 300):
+                result, _ = compute_mpc(inp, params)
             assert result is not None
             valve_percent = result.valve_percent
             dbg = result.debug or {}
