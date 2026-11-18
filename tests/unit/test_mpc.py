@@ -84,12 +84,7 @@ class TestMPCController:
 
     @pytest.mark.parametrize("room_temperature", [22.2, 22.3, 22.4])
     def test_negative_error_shutoff(self, room_temperature):
-        """A room above its target gets a closed valve from the controller itself.
-
-        The forced loss calibration, which also closes the valve above
-        target, is kept from triggering so the controller's own answer is
-        what the test sees.
-        """
+        """A room above its target gets a closed valve from the controller itself."""
         params = MpcParams(mpc_adapt=False)
         key = f"test_shutoff_{room_temperature}"
         _STATES[key] = MpcState(loss_learn_count=100)
@@ -99,8 +94,7 @@ class TestMPCController:
             room_temperature=room_temperature,
             temperature_slope_K_per_min=0.0,
         )
-        with patch(f"{_MPC}.random.random", return_value=0.99):
-            result, _ = compute_mpc(inp, params)
+        result, _ = compute_mpc(inp, params)
         assert result is not None
         assert result.debug.get("calib_active") is None
         assert result.valve_percent == 0
@@ -786,7 +780,8 @@ class TestMPCController:
                 room_temperature=current_rounded,
                 # temperature_slope_K_per_min=slope,
             )
-            result, _ = compute_mpc(inp, params)
+            with patch(f"{_MPC}.time", return_value=1_800_000_000.0 + step * 300):
+                result, _ = compute_mpc(inp, params)
             assert result is not None
             valve_percent = result.valve_percent
             dbg = result.debug or {}

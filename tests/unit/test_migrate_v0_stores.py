@@ -132,7 +132,7 @@ class TestImportLegacyData:
         assert mpc.gain_est == pytest.approx(0.5)
         assert mpc.loss_est == pytest.approx(0.02)
         assert mpc.dead_zone_hits == 3
-        assert mpc.is_calibration_active is True
+        assert not hasattr(mpc, "is_calibration_active")
         assert mpc.trv_profile == "linear"
 
     def test_import_pid_data(self) -> None:

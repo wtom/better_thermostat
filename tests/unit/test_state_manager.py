@@ -155,7 +155,6 @@ class TestMpcStateDefaults:
     def test_bool_defaults(self):
         """All boolean fields default to False."""
         s = MpcState()
-        assert s.is_calibration_active is False
         assert s.regime_boost_active is False
         assert s.tolerance_hold_active is False
 
@@ -221,7 +220,6 @@ class TestSerializeDeserializeRoundtrip:
         mpc = MpcState(
             last_percent=42.5,
             dead_zone_hits=3,
-            is_calibration_active=True,
             trv_profile="linear",
             recent_errors=deque([0.1, -0.2, 0.05], maxlen=20),
             perf_curve={"20.0": {"gain": 1.5, "count": 10}},
@@ -234,7 +232,6 @@ class TestSerializeDeserializeRoundtrip:
         r_mpc = restored.mpc["trv1__20"]
         assert r_mpc.last_percent == 42.5
         assert r_mpc.dead_zone_hits == 3
-        assert r_mpc.is_calibration_active is True
         assert r_mpc.trv_profile == "linear"
         assert list(r_mpc.recent_errors) == [0.1, -0.2, 0.05]
         assert r_mpc.perf_curve == {"20.0": {"gain": 1.5, "count": 10}}
@@ -442,10 +439,10 @@ class TestDeserializeMpcTypeCoercion:
 
     def test_bool_field_from_int(self):
         """Integer values in bool fields are coerced to bool."""
-        raw = {"is_calibration_active": 1, "regime_boost_active": 0}
+        raw = {"regime_boost_active": 1, "tolerance_hold_active": 0}
         mpc = deserialize_mpc(raw)
-        assert mpc.is_calibration_active is True
-        assert mpc.regime_boost_active is False
+        assert mpc.regime_boost_active is True
+        assert mpc.tolerance_hold_active is False
 
     def test_str_field_from_number(self):
         """Numeric values in str fields are coerced to str."""

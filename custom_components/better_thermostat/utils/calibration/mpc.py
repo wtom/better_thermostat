@@ -7,7 +7,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 import logging
 import math
-import random
 from time import time
 from typing import TYPE_CHECKING
 
@@ -151,7 +150,6 @@ class _MpcState:
     created_ts: float = 0.0
     loss_learn_count: int = 0
     gain_learn_count: int = 0
-    is_calibration_active: bool = False
     recent_errors: deque[float] = field(default_factory=lambda: deque(maxlen=20))
     regime_boost_active: bool = False
     consecutive_insufficient_heat: int = 0
@@ -684,15 +682,6 @@ def compute_mpc(
         state.last_residual_time = None
         state.tolerance_hold_active = False
 
-        if state.is_calibration_active:
-            state.is_calibration_active = False
-            _LOGGER.info(
-                "better_thermostat %s: Calibration aborted (window_open=%s, heating_allowed=%s).",
-                name,
-                inp.window_open,
-                inp.heating_allowed,
-            )
-
         _LOGGER.debug(
             "better_thermostat %s: MPC skip heating (%s) window_open=%s heating_allowed=%s",
             name,
@@ -854,39 +843,6 @@ def compute_mpc(
             )
             # Keep any virtual-temperature debug collected earlier and merge MPC debug on top.
             extra_debug.update(mpc_debug)
-
-        # --- FORCED LOSS CALIBRATION ---
-        # "Hybrid Learning": Use random forced calibration to get high-confidence loss samples.
-        # Trigger: current >= target. Probability: decays with number of samples.
-        # Action: Force valve closed until current < target - hysteresis.
-        calib_hysteresis = 0.2
-        if state.is_calibration_active:
-            if inp.room_temperature <= (inp.target_temperature - calib_hysteresis):
-                state.is_calibration_active = False
-                _LOGGER.info(
-                    "better_thermostat %s: Calibration finished (temp reached target - %.1fvK). Resuming control.",
-                    name,
-                    calib_hysteresis,
-                )
-            else:
-                percent = 0.0
-                extra_debug["calib_active"] = True
-
-        # Trigger condition: Overheated/Reached target
-        # Check random chance if we have "enough" heat (delta_kelvin <= 0 means we are at/above target)
-        elif inp.room_temperature >= inp.target_temperature:
-            # Chance decays with experience: 1 (100%), 0.5, ... but min 5%
-            chance = max(0.05, 1.0 / (state.loss_learn_count + 1))
-            if random.random() < chance:
-                state.is_calibration_active = True
-                percent = 0.0
-                extra_debug["calib_active"] = True
-                _LOGGER.info(
-                    "better_thermostat %s: Starting forced calibration (chance %.2f, count %d). Forcing 0%% valve.",
-                    name,
-                    chance,
-                    state.loss_learn_count,
-                )
 
         _LOGGER.debug(
             "better_thermostat %s: MPC raw output (%s) percent=%s delta_T=%s debug=%s",
@@ -1274,7 +1230,7 @@ def _compute_predictive_percent(
 
                     if not is_insufficient_heat:
                         # Heavily reduce alpha for steady-state learning to rely more on
-                        # "cool_u0" events (forced calibration).
+                        # "cool_u0" events (natural cooling).
                         base_alpha = base_adapt_alpha * 0.2
                         alpha = base_alpha
                         if loss_candidate < loss_est:

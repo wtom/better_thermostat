@@ -98,7 +98,6 @@ def _populated_mpc() -> MpcState:
         created_ts=1699990000.0,
         loss_learn_count=5,
         gain_learn_count=7,
-        is_calibration_active=True,
         recent_errors=deque([0.1, -0.2, 0.05], maxlen=20),
         regime_boost_active=True,
         consecutive_insufficient_heat=2,

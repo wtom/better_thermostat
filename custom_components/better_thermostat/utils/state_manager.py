@@ -307,7 +307,6 @@ def write_mpc_state(state: MpcState) -> StoredMpcState:
         "created_ts": state.created_ts,
         "loss_learn_count": state.loss_learn_count,
         "gain_learn_count": state.gain_learn_count,
-        "is_calibration_active": state.is_calibration_active,
         "recent_errors": list(state.recent_errors),
         "regime_boost_active": state.regime_boost_active,
         "consecutive_insufficient_heat": state.consecutive_insufficient_heat,
@@ -837,9 +836,6 @@ def deserialize_mpc(
             ),
             gain_learn_count=read.required(
                 "gain_learn_count", _stored_tally, held.gain_learn_count
-            ),
-            is_calibration_active=read.required(
-                "is_calibration_active", _stored_flag, held.is_calibration_active
             ),
             recent_errors=read.required(
                 "recent_errors", _stored_recent_errors, held.recent_errors

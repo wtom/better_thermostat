@@ -55,13 +55,6 @@ class TestImportStringFields:
 
         assert _round_trip(state).profile_samples == 42
 
-    def test_is_calibration_active_survives_round_trip(self):
-        """is_calibration_active (bool) should survive a round-trip."""
-        state = _MpcState()
-        state.is_calibration_active = True
-
-        assert _round_trip(state).is_calibration_active is True
-
     def test_loss_learn_count_survives_round_trip(self):
         """loss_learn_count (int) should survive a round-trip."""
         state = _MpcState()
@@ -119,7 +112,6 @@ class TestImportStringFields:
         state.last_percent = 42.0
         state.min_effective_percent = 12.0
         state.dead_zone_hits = 3
-        state.is_calibration_active = True
         state.trv_profile = "threshold"
         state.profile_confidence = 0.85
         state.profile_samples = 10
@@ -134,7 +126,6 @@ class TestImportStringFields:
         assert restored.last_percent == pytest.approx(42.0)
         assert restored.min_effective_percent == pytest.approx(12.0)
         assert restored.dead_zone_hits == 3
-        assert restored.is_calibration_active is True
         assert restored.trv_profile == "threshold"
         assert restored.profile_confidence == pytest.approx(0.85)
         assert restored.profile_samples == 10
