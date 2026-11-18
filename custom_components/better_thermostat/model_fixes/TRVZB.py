@@ -28,6 +28,7 @@ from custom_components.better_thermostat.model_fixes.types import (
     ModelFixTrv,
     ModelQuirks,
     ValveChannelQuirk,
+    ValveFeedbackQuirk,
     ValveQuirk,
 )
 from custom_components.better_thermostat.utils.helpers import is_sibling_entry
@@ -255,6 +256,41 @@ def has_valve_channel(self: ModelFixHost, entity_id: str) -> bool:
     """
     candidates = _valve_number_candidates(self, entity_id)
     return candidates is not None and any(candidates)
+
+
+def valve_target_diverges(self: ModelFixHost, entity_id: str, percent: int) -> bool:
+    """Check all numbers the writer owns, including the closing complement."""
+    trv = self.real_trvs.get(entity_id)
+    if trv is None:
+        return False
+    pending = trv.extra.get("_trvzb_valve_bump_task")
+    if pending is not None and not pending.done():
+        # The temporary opening is intentional until the delayed target runs.
+        return False
+    candidates = _valve_number_candidates(self, entity_id)
+    if candidates is None:
+        return False
+    opening, closing, generic = candidates
+    targets = []
+    if opening:
+        targets.append((opening[0], percent))
+    if closing:
+        targets.append((closing[0], 100 - percent))
+    if not targets and generic:
+        target = sorted(generic, key=lambda x: ("valve" not in x, "position" not in x))[
+            0
+        ]
+        targets.append((target, percent))
+    for entity, target in targets:
+        state = self.hass.states.get(entity)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            continue
+        try:
+            if abs(float(state.state) - target) >= 1:
+                return True
+        except TypeError, ValueError:
+            continue
+    return False
 
 
 async def maybe_set_sonoff_valve_percent(
@@ -845,6 +881,7 @@ class _Surface:
     maybe_set_external_temperature = staticmethod(maybe_set_external_temperature)
     override_set_valve = staticmethod(override_set_valve)
     has_valve_channel = staticmethod(has_valve_channel)
+    valve_target_diverges = staticmethod(valve_target_diverges)
 
 
 _MODEL_QUIRKS: ModelQuirks = _Surface()
@@ -852,3 +889,5 @@ _EXTERNAL_TEMPERATURE_QUIRK: ExternalTemperatureQuirk = _Surface()
 _MAINTENANCE_INTERVAL_QUIRK: MaintenanceIntervalQuirk = _Surface()
 _VALVE_QUIRK: ValveQuirk = _Surface()
 _VALVE_CHANNEL_QUIRK: ValveChannelQuirk = _Surface()
+
+_VALVE_FEEDBACK_QUIRK: ValveFeedbackQuirk = _Surface()
