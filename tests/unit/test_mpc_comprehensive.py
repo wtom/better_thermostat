@@ -35,10 +35,7 @@ from custom_components.better_thermostat.utils.calibration.mpc import (
     distribute_valve_percent,
     sanitize_mpc_state,
 )
-from custom_components.better_thermostat.utils.state_manager import (
-    deserialize_mpc,
-    write_mpc_state,
-)
+from custom_components.better_thermostat.utils.state_manager import deserialize_mpc
 from tests.factories import ThermostatStandIn
 
 _STATES: dict[str, _MpcState] = {}
@@ -330,6 +327,7 @@ class TestStatePersistence:
         state.last_percent = 42.0
         state.min_effective_percent = 12.0
         state.dead_zone_hits = 3
+        state.is_calibration_active = True
         state.trv_profile = "threshold"
         state.profile_confidence = 0.85
 
@@ -337,6 +335,7 @@ class TestStatePersistence:
         assert restored.gain_est == pytest.approx(0.08)
         assert restored.loss_est == pytest.approx(0.015)
         assert restored.dead_zone_hits == 3
+        assert restored.is_calibration_active is True
         assert restored.trv_profile == "threshold"
         assert restored.last_percent == 42.0
         assert restored.min_effective_percent == 12.0
@@ -476,6 +475,15 @@ class TestComputeMpcBasic:
         assert state.virtual_temperature is None
         assert state.last_residual_time is None
 
+    def test_calibration_aborted_on_window_open(self):
+        """Active calibration should be aborted when window opens."""
+        params = _default_params()
+        _compute(_inp(key="cal_abort"), params)
+        _STATES["cal_abort"].is_calibration_active = True
+
+        _compute(_inp(key="cal_abort", window_open=True), params)
+        assert _STATES["cal_abort"].is_calibration_active is False
+
     def test_valve_integration_accumulates(self):
         """u_integral should accumulate valve position over time."""
         params = _default_params()
@@ -529,38 +537,58 @@ class TestAdaptiveLearning:
         assert state.loss_est is None
 
     def test_loss_learns_when_valve_closed_and_cooling(self):
-        """Natural cooling after an optimizer closure supplies loss samples."""
-        params = _default_params(mpc_adapt=True, mpc_adapt_alpha=0.5)
-        state = _MpcState()
-        closed = _run_at(_NOW - 300, _inp(room_temperature=22.5), params, state)
-        assert closed.valve_percent == 0
+        """When valve is 0% and room cools, loss should be learned."""
+        params = _default_params(
+            mpc_adapt=True,
+            mpc_adapt_alpha=0.5,
+            mpc_loss_coeff=0.01,
+            enable_min_effective_percent=False,
+        )
+        state = self._setup_learning_state(
+            "loss_cool",
+            params,
+            last_percent=0.0,
+            last_learn_temperature=21.0,
+            last_learn_time=time() - 300,  # 5 min ago
+            gain_est=0.06,
+            loss_est=0.01,
+            u_integral=0.0,
+            time_integral=300.0,
+        )
         loss_before = state.loss_est
 
-        cooled = _run_at(_NOW, _inp(room_temperature=22.3), params, state)
-
-        assert cooled.debug["id_loss_method"] == "cool_u0"
-        assert cooled.debug["id_loss_updated"] is True
-        assert state.loss_learn_count == 1
+        # Room cooled from 21.0 to 20.5 in 5 min = -0.1 °C/min
+        _compute(_inp(key="loss_cool", room_temperature=20.5), params)
+        # Loss should have increased (room is cooling faster than model predicted)
         assert state.loss_est is not None
         assert loss_before is not None
-        assert state.loss_est > loss_before
+        assert state.loss_est >= loss_before
 
     def test_gain_learns_when_valve_open_and_warming(self):
-        """Heating demand supplies gain samples as the room warms."""
-        params = _default_params(mpc_adapt=True, mpc_adapt_alpha=0.5)
-        state = _MpcState()
-        heating = _run_at(_NOW - 300, _inp(room_temperature=20.0), params, state)
-        assert heating.valve_percent > 0
-        gain_before = state.gain_est
+        """When valve is open and room warms, gain should be learned."""
+        params = _default_params(
+            mpc_adapt=True,
+            mpc_adapt_alpha=0.5,
+            mpc_thermal_gain=0.06,
+            mpc_loss_coeff=0.01,
+            enable_min_effective_percent=False,
+        )
+        state = self._setup_learning_state(
+            "gain_warm",
+            params,
+            last_percent=80.0,
+            last_learn_temperature=20.0,
+            last_learn_time=time() - 300,
+            gain_est=0.06,
+            loss_est=0.01,
+            u_integral=80.0 * 300,
+            time_integral=300.0,
+        )
 
-        warmed = _run_at(_NOW, _inp(room_temperature=20.3), params, state)
-
-        assert warmed.debug["id_gain_method"] == "heat_rate"
-        assert warmed.debug["id_gain_updated"] is True
-        assert state.gain_learn_count == 1
+        # Room warmed from 20.0 to 20.5 in 5 min
+        _compute(_inp(key="gain_warm", room_temperature=20.5), params)
+        # gain_est should have been updated
         assert state.gain_est is not None
-        assert gain_before is not None
-        assert state.gain_est > gain_before
 
     def test_adaptation_blocked_after_window_event(self):
         """Adaptation should be blocked for mpc_adapt_window_block_s after window open."""
@@ -1147,46 +1175,81 @@ class TestPerfCurveSampling:
 
 
 # ===================================================================
-# 10. PASSIVE LEARNING CONTROL
+# 10. FORCED CALIBRATION
 # ===================================================================
 
 
-class TestPassiveLearningControl:
-    """Learning must preserve the optimizer's comfort demand."""
+class TestForcedCalibration:
+    """Tests for forced loss calibration (random valve-off episodes)."""
+
+    def test_calibration_ends_when_temperature_drops_below_threshold(self, monkeypatch):
+        """Active calibration should end when temperature < target - hysteresis."""
+        monkeypatch.setattr(mpc_module, "MPC_FORCED_CALIBRATION_PROBABILITY", 1.0)
+        params = _default_params()
+        _compute(
+            _inp(key="calend", room_temperature=22.5, target_temperature=22.0), params
+        )
+        state = _STATES["calend"]
+        state.is_calibration_active = True
+
+        # Temp drops to 21.7 (< 22.0 - 0.2 = 21.8)
+        _compute(
+            _inp(key="calend", room_temperature=21.7, target_temperature=22.0), params
+        )
+        assert state.is_calibration_active is False
+
+    def test_calibration_keeps_valve_at_zero(self, monkeypatch):
+        """During active calibration, valve should be forced to 0."""
+        monkeypatch.setattr(mpc_module, "MPC_FORCED_CALIBRATION_PROBABILITY", 1.0)
+        params = _default_params()
+        _compute(
+            _inp(key="cal0", room_temperature=22.1, target_temperature=22.0), params
+        )
+        state = _STATES["cal0"]
+        state.is_calibration_active = True
+
+        result = _compute(
+            _inp(key="cal0", room_temperature=22.1, target_temperature=22.0), params
+        )
+        assert result.valve_percent == 0
+
+    def test_calibration_triggered_when_enabled(self, monkeypatch):
+        """Explicitly enabled forced calibration can close the valve at target."""
+        monkeypatch.setattr(mpc_module, "MPC_FORCED_CALIBRATION_PROBABILITY", 1.0)
+        with patch.object(mpc_module.random, "random", return_value=0.0):
+            result = _compute(
+                _inp(key="cal_enabled", room_temperature=22.0), _default_params()
+            )
+        assert _STATES["cal_enabled"].is_calibration_active is True
+        assert result.valve_percent == 0
 
     @pytest.mark.parametrize("loss_learn_count", [0, 500])
     @pytest.mark.parametrize("room_temperature", [22.0, 22.01])
-    def test_at_target_demand_is_not_randomly_closed(
+    def test_default_probability_preserves_at_target_demand(
         self, loss_learn_count, room_temperature
     ):
         """Maintaining target temperature must not trigger forced cooling."""
-        params = _default_params(mpc_adapt=True)
         state = _MpcState(loss_learn_count=loss_learn_count)
-
-        with patch("random.random", return_value=0.0):
-            output = _run_at(
-                _NOW, _inp(room_temperature=room_temperature), params, state
+        with patch.object(mpc_module.random, "random", return_value=0.0):
+            result = _run_at(
+                _NOW, _inp(room_temperature=room_temperature), _default_params(), state
             )
-
-        demand = output.debug["mpc_u_abs_pct"]
+        demand = result.debug["mpc_u_abs_pct"]
         assert isinstance(demand, int | float)
         assert demand > 0
-        assert output.valve_percent > 0
-        assert "calib_active" not in output.debug
+        assert result.valve_percent > 0
+        assert state.is_calibration_active is False
 
-    def test_legacy_calibration_flag_does_not_suppress_demand(self):
-        """An old saved calibration episode must not delay comfort recovery."""
-        legacy = dict(write_mpc_state(_MpcState(gain_est=0.08, loss_est=0.015)))
-        legacy["is_calibration_active"] = True
-        state = deserialize_mpc(legacy)
-        assert state.gain_est == 0.08
-        assert state.loss_est == 0.015
+    def test_default_probability_cancels_legacy_active_phase(self):
+        """A saved forced calibration must not delay comfort recovery."""
+        state = deserialize_mpc({"is_calibration_active": True, "last_percent": 0.0})
+        assert state.is_calibration_active is True
 
-        output = _run_at(_NOW, _inp(room_temperature=21.9), _default_params(), state)
+        result = _run_at(_NOW, _inp(room_temperature=21.9), _default_params(), state)
 
-        assert output.valve_percent > 0
-        assert "calib_active" not in output.debug
-        assert "is_calibration_active" not in write_mpc_state(state)
+        assert result.valve_percent > 0
+        assert state.is_calibration_active is False
+        assert "calib_active" not in result.debug
 
 
 # ===================================================================

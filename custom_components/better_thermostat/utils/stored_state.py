@@ -51,6 +51,7 @@ StoredMpcState = TypedDict(  # noqa: UP013
         "created_ts": float,
         "loss_learn_count": int,
         "gain_learn_count": int,
+        "is_calibration_active": bool,
         "recent_errors": list[float],
         "regime_boost_active": bool,
         "consecutive_insufficient_heat": int,

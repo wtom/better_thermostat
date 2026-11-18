@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 import logging
 import math
+import random
 from time import time
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,8 @@ _LOGGER = logging.getLogger(__name__)
 # MPC operates on fixed 5-minute steps and a 6-step horizon.
 MPC_STEP_SECONDS = 300.0
 MPC_HORIZON_STEPS = 6
+# Disable forced cooling; passive gain/loss learning remains enabled.
+MPC_FORCED_CALIBRATION_PROBABILITY = 0.0
 # Adaptation learns only from a room-temperature change of at least this size
 # (quantised sensors) and at most this rate (sensor jumps, transients).
 MPC_TEMP_CHANGE_THRESHOLD_K = 0.05
@@ -150,6 +153,7 @@ class _MpcState:
     created_ts: float = 0.0
     loss_learn_count: int = 0
     gain_learn_count: int = 0
+    is_calibration_active: bool = False
     recent_errors: deque[float] = field(default_factory=lambda: deque(maxlen=20))
     regime_boost_active: bool = False
     consecutive_insufficient_heat: int = 0
@@ -682,6 +686,15 @@ def compute_mpc(
         state.last_residual_time = None
         state.tolerance_hold_active = False
 
+        if state.is_calibration_active:
+            state.is_calibration_active = False
+            _LOGGER.info(
+                "better_thermostat %s: Calibration aborted (window_open=%s, heating_allowed=%s).",
+                name,
+                inp.window_open,
+                inp.heating_allowed,
+            )
+
         _LOGGER.debug(
             "better_thermostat %s: MPC skip heating (%s) window_open=%s heating_allowed=%s",
             name,
@@ -843,6 +856,42 @@ def compute_mpc(
             )
             # Keep any virtual-temperature debug collected earlier and merge MPC debug on top.
             extra_debug.update(mpc_debug)
+
+        # --- FORCED LOSS CALIBRATION ---
+        # "Hybrid Learning": Use random forced calibration to get high-confidence loss samples.
+        # Trigger: current >= target, if forced calibration is enabled.
+        # Action: Force valve closed until current < target - hysteresis.
+        calib_hysteresis = 0.2
+        if state.is_calibration_active:
+            if MPC_FORCED_CALIBRATION_PROBABILITY <= 0 or inp.room_temperature <= (
+                inp.target_temperature - calib_hysteresis
+            ):
+                state.is_calibration_active = False
+                _LOGGER.info(
+                    "better_thermostat %s: Calibration finished (%s). Resuming control.",
+                    name,
+                    "forced calibration disabled"
+                    if MPC_FORCED_CALIBRATION_PROBABILITY <= 0
+                    else "cooling threshold reached",
+                )
+            else:
+                percent = 0.0
+                extra_debug["calib_active"] = True
+
+        # Trigger condition: Overheated/Reached target
+        # Check random chance if we have "enough" heat (delta_kelvin <= 0 means we are at/above target)
+        elif inp.room_temperature >= inp.target_temperature:
+            chance = MPC_FORCED_CALIBRATION_PROBABILITY
+            if random.random() < chance:
+                state.is_calibration_active = True
+                percent = 0.0
+                extra_debug["calib_active"] = True
+                _LOGGER.info(
+                    "better_thermostat %s: Starting forced calibration (chance %.2f, count %d). Forcing 0%% valve.",
+                    name,
+                    chance,
+                    state.loss_learn_count,
+                )
 
         _LOGGER.debug(
             "better_thermostat %s: MPC raw output (%s) percent=%s delta_T=%s debug=%s",
@@ -1230,7 +1279,7 @@ def _compute_predictive_percent(
 
                     if not is_insufficient_heat:
                         # Heavily reduce alpha for steady-state learning to rely more on
-                        # "cool_u0" events (natural cooling).
+                        # "cool_u0" events (forced calibration).
                         base_alpha = base_adapt_alpha * 0.2
                         alpha = base_alpha
                         if loss_candidate < loss_est:
