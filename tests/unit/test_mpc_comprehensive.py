@@ -1050,8 +1050,8 @@ class TestPostProcessing:
         # With target below current, should be 0
         assert r2.valve_percent != pct1 or r2.valve_percent == 0
 
-    def test_du_max_limits_step_size(self):
-        """du_max should limit how fast the valve can change when ramping UP."""
+    def test_recovery_bypasses_step_limit(self):
+        """A cold room can recover without waiting through capped opening steps."""
         params = _default_params(mpc_du_max_percent=5.0)
 
         # First call: cold room -> high valve
@@ -1064,8 +1064,10 @@ class TestPostProcessing:
         r = _compute(
             _inp(key="dumax", room_temperature=16.0, target_temperature=22.0), params
         )
-        # Change should be limited to +5% (ramp up is rate-limited)
-        assert r.valve_percent <= 55  # 50 + 5
+        # Recovery supersedes the former unconditional opening cap: waiting
+        # through five-point steps would prolong an existing heating deficit.
+        assert r.valve_percent == 100
+        assert r.debug["recovery_open"] is True
 
     def test_du_max_bypassed_on_overshoot(self):
         """du_max should NOT limit valve closing when room is above target (overshoot)."""
