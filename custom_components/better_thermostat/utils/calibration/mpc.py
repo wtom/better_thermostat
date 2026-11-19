@@ -29,6 +29,8 @@ MPC_FORCED_CALIBRATION_PROBABILITY = 0.0
 # (quantised sensors) and at most this rate (sensor jumps, transients).
 MPC_TEMP_CHANGE_THRESHOLD_K = 0.05
 MPC_MAX_ABS_RATE_C_PER_MIN = 0.35
+# Recover before a 0.2 K deficit while retaining a near-target noise band.
+MPC_RECOVERY_DEFICIT_K = 0.1
 
 
 @dataclass
@@ -1859,18 +1861,53 @@ def _post_process_percent(
             )
             smooth = min_eff
 
-    # 3) DU_MAX LIMIT (MAX STEPPING)
+    # Preserve demand before clipping so the large-change hold exceptions work.
     last_percent = state.last_percent
-    du_max = params.mpc_du_max_percent
+    requested_delta = smooth - last_percent if last_percent is not None else 0.0
+    hold_time = params.min_percent_hold_time_s
+    remaining_hold_seconds = max(
+        0.0, min(hold_time, hold_time - (now - state.last_update_ts))
+    )
+    recovery_open = False
+    predictive_close = False
+    if delta_kelvin is not None:
+        # compute_mpc supplies the virtual control-state deficit when enabled.
+        # Anchor measured trends to that same state, not a possibly stale sensor.
+        slope = inp.temperature_slope_K_per_min
+        projected_delta_kelvin = delta_kelvin
+        if slope is not None and math.isfinite(slope):
+            projected_delta_kelvin -= slope * remaining_hold_seconds / 60.0
+        recovery_deficit_kelvin = delta_kelvin
+        if slope is not None and math.isfinite(slope) and slope < 0:
+            recovery_deficit_kelvin = max(delta_kelvin, projected_delta_kelvin)
+        # Decimal temperature subtraction can land just below the boundary.
+        recovery_open = requested_delta > 0 and (
+            recovery_deficit_kelvin >= MPC_RECOVERY_DEFICIT_K
+            or math.isclose(
+                recovery_deficit_kelvin, MPC_RECOVERY_DEFICIT_K, abs_tol=1e-9, rel_tol=0
+            )
+        )
+        predictive_close = requested_delta < 0 and (
+            delta_kelvin < 0
+            or (
+                slope is not None
+                and math.isfinite(slope)
+                and slope > 0
+                and remaining_hold_seconds > 0
+                and (
+                    projected_delta_kelvin <= 0
+                    or math.isclose(
+                        projected_delta_kelvin, 0.0, abs_tol=1e-9, rel_tol=0
+                    )
+                )
+            )
+        )
 
+    # 3) DU_MAX LIMIT (MAX STEPPING)
+    du_max = params.mpc_du_max_percent
     if last_percent is not None and du_max is not None and du_max > 0:
-        delta = smooth - last_percent
-        # Bypass du_max when closing the valve and room is already above target.
-        # The rate limiter should not prevent the valve from closing during overshoot
-        # — it would keep heating a room that is already too warm.
-        _overshooting = delta_kelvin is not None and delta_kelvin < 0 and delta < 0
-        if abs(delta) > du_max and not _overshooting:
-            limited = last_percent + du_max * (1 if delta > 0 else -1)
+        if abs(requested_delta) > du_max and not (recovery_open or predictive_close):
+            limited = last_percent + du_max * (1 if requested_delta > 0 else -1)
             _LOGGER.debug(
                 "better_thermostat %s: MPC du_max-limit (%s) raw=%s → limited=%s (max %s)",
                 name,
@@ -2030,6 +2067,8 @@ def _post_process_percent(
         "raw_percent": _round_for_debug(raw_percent, 2),
         "smooth_percent": _round_for_debug(smooth, 2),
         "too_soon": too_soon,
+        "recovery_open": recovery_open,
+        "predictive_close": predictive_close,
         "target_changed": target_changed,
         "delta_T": _round_for_debug(delta_kelvin, 3),
         "min_effective_percent": (
@@ -2057,18 +2096,15 @@ def _post_process_percent(
         debug["slope_ema"] = _round_for_debug(state.ema_slope, 4)
 
     # MINIMUM HOLD TIME – ANTI-CHATTERING
-    hold_time = params.min_percent_hold_time_s
-
     # If we sent a command shortly before, block updates
     if state.last_percent is not None:
         time_since_update = now - state.last_update_ts
 
         # Exception: if target changed, always allow updates
         if not target_changed:
-            delta_cmd = smooth - state.last_percent
             # Exception: large change required (e.g. window event / fast overheat reduction)
-            big_open = delta_cmd >= params.big_change_force_open_percent
-            big_close = (-delta_cmd) >= params.big_change_force_close_percent
+            big_open = requested_delta >= params.big_change_force_open_percent
+            big_close = (-requested_delta) >= params.big_change_force_close_percent
             remaining = hold_time - time_since_update
 
             if (
@@ -2076,6 +2112,8 @@ def _post_process_percent(
                 and time_since_update < hold_time
                 and not big_open
                 and not big_close
+                and not recovery_open
+                and not predictive_close
             ):
                 percent_out = round(state.last_percent)
                 debug["hold_block"] = True

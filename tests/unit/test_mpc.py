@@ -902,3 +902,221 @@ class TestMPCController:
 
         assert out_no_pen is not None and out_with_pen is not None
         assert out_with_pen.valve_percent <= out_no_pen.valve_percent
+
+
+@pytest.mark.parametrize(
+    (
+        "raw_percent",
+        "delta_kelvin",
+        "slope",
+        "seconds_since_update",
+        "expected",
+        "recovery_open",
+        "predictive_close",
+    ),
+    [
+        pytest.param(
+            83.0, 0.02, None, 60, 75, False, False, id="raw_33_opens_with_cap"
+        ),
+        pytest.param(82.0, 0.02, None, 60, 50, False, False, id="below_33_held"),
+        pytest.param(90.0, 0.15, None, 60, 90, True, False, id="early_recovery"),
+        pytest.param(90.0, 0.1, None, 60, 90, True, False, id="recovery_boundary"),
+        pytest.param(90.0, 0.02, -0.03, 60, 90, True, False, id="falling_recovery"),
+        pytest.param(90.0, 0.02, 0.03, 60, 75, False, False, id="rising_no_recovery"),
+        pytest.param(90.0, 0.02, None, 60, 75, False, False, id="missing_slope_capped"),
+        pytest.param(90.0, 0.02, float("nan"), 60, 75, False, False, id="nan_capped"),
+        pytest.param(90.0, 0.02, -float("inf"), 60, 75, False, False, id="inf_capped"),
+        pytest.param(
+            90.0, 0.02, -0.03, 300, 75, False, False, id="expired_no_projection"
+        ),
+        pytest.param(
+            90.0, 0.02, -0.01, -600, 50, False, False, id="bounded_clock_rollback"
+        ),
+        pytest.param(10.0, 0.05, 0.02, 60, 10, False, True, id="preventive_full_close"),
+        pytest.param(
+            45.0, 0.05, 0.02, 60, 45, False, True, id="preventive_small_close"
+        ),
+        pytest.param(10.0, 0.08, 0.02, 60, 10, False, True, id="crossing_boundary"),
+        pytest.param(
+            45.0, 0.05, -0.02, 60, 50, False, False, id="falling_no_close_bypass"
+        ),
+        pytest.param(
+            10.0, 0.05, None, 60, 25, False, False, id="missing_slope_close_capped"
+        ),
+        pytest.param(
+            45.0, 0.05, float("inf"), 60, 50, False, False, id="inf_no_close_bypass"
+        ),
+        pytest.param(45.0, 0.0, 0.0, 60, 50, False, False, id="flat_at_target_held"),
+        pytest.param(
+            45.0, 0.0, None, 60, 50, False, False, id="no_slope_at_target_held"
+        ),
+        pytest.param(
+            55.0, 0.02, 0.0, 60, 50, False, False, id="stable_small_open_held"
+        ),
+        pytest.param(
+            45.0, 0.02, 0.0, 60, 50, False, False, id="stable_small_close_held"
+        ),
+        pytest.param(
+            45.0, -0.02, None, 60, 45, False, True, id="above_target_small_close"
+        ),
+        pytest.param(
+            10.0, -0.02, -0.02, 300, 10, False, True, id="above_target_expired_hold"
+        ),
+        pytest.param(90.0, 0.15, -0.03, 59, 50, True, False, id="cadence_wins_open"),
+        pytest.param(10.0, 0.05, 0.02, 59, 50, False, True, id="cadence_wins_close"),
+        pytest.param(50.4, 0.15, None, 60, 50, True, False, id="hysteresis_wins_open"),
+        pytest.param(
+            49.6, -0.02, None, 60, 50, False, True, id="hysteresis_wins_close"
+        ),
+    ],
+)
+def test_responsive_limits(
+    raw_percent,
+    delta_kelvin,
+    slope,
+    seconds_since_update,
+    expected,
+    recovery_open,
+    predictive_close,
+):
+    """Heating need and imminent overshoot get timely commands within cadence limits."""
+    state = MpcState(
+        last_percent=50.0, last_update_ts=1000.0, last_target_temperature=22.0
+    )
+    # Deliberately disagree with the control state: a stale sensor must not
+    # replace the virtual delta supplied by compute_mpc in the safety decision.
+    inp = MpcInput(
+        key="responsive",
+        target_temperature=22.0,
+        room_temperature=21.0 if delta_kelvin <= 0.02 else 23.0,
+        temperature_slope_K_per_min=slope,
+    )
+    percent, debug, returned_delta = _post_process_percent(
+        inp,
+        MpcParams(),
+        state,
+        1000.0 + seconds_since_update,
+        raw_percent,
+        delta_kelvin,
+    )
+    assert percent == expected
+    assert debug["recovery_open"] is recovery_open
+    assert debug["predictive_close"] is predictive_close
+    assert returned_delta == delta_kelvin
+    assert state.last_update_ts == (
+        1000.0 if expected == 50 else 1000.0 + seconds_since_update
+    )
+
+
+def test_recovery_respects_max_opening():
+    """A recovery request stays within the user's maximum opening."""
+    state = MpcState(last_percent=50.0, last_update_ts=1000.0)
+    inp = MpcInput(
+        key="recovery_cap",
+        target_temperature=22.0,
+        room_temperature=21.85,
+        max_opening_percent=70.0,
+    )
+    percent, debug, _ = _post_process_percent(
+        inp, MpcParams(), state, 1060.0, 95.0, None
+    )
+    assert percent == 70
+    assert debug["recovery_open"] is True
+    assert debug["max_opening_clamped"] is True
+
+
+def test_default_compute_recovers_before_point_two_kelvin_deficit():
+    """Default MPC can recover early without waiting for its valve hold to expire."""
+    state = MpcState(
+        last_percent=0.0, last_update_ts=940.0, last_target_temperature=22.0
+    )
+    inp = MpcInput(
+        key="default_recovery", target_temperature=22.0, room_temperature=21.82
+    )
+    params = MpcParams()
+    with patch(f"{_MPC}.time", return_value=1000.0):
+        result, updated_state = _compute_mpc(inp, params, state=state, all_states={})
+    assert result is not None
+    # The unmodified optimizer asks for less than the big-opening exemption,
+    # but more than the default cap, inside the default five-minute hold.
+    assert (
+        params.mpc_du_max_percent
+        < result.valve_percent
+        < params.big_change_force_open_percent
+    )
+    assert result.valve_percent == result.debug["raw_percent"]
+    assert result.debug["recovery_open"] is True
+    assert result.debug.get("hold_block") is None
+    control_delta = result.debug["delta_T"]
+    assert isinstance(control_delta, float)
+    assert 0.1 < control_delta < 0.2
+    assert updated_state.last_update_ts == 1000.0
+
+
+@pytest.mark.parametrize(
+    ("target_temperature", "room_temperature", "slope", "expected_recovery"),
+    [
+        pytest.param(21.2, 21.1, None, True, id="decimal_current_below_float_boundary"),
+        pytest.param(22.0, 21.9, None, True, id="decimal_current_above_float_boundary"),
+        pytest.param(21.2, 21.11, None, False, id="current_inside_noise_band"),
+        pytest.param(21.2, 21.18, -0.02, True, id="decimal_projected_boundary"),
+        pytest.param(22.0, 21.98, -0.02, True, id="second_projected_boundary"),
+        pytest.param(21.2, 21.19, -0.02, False, id="projection_inside_noise_band"),
+    ],
+)
+def test_decimal_recovery_boundary(
+    target_temperature, room_temperature, slope, expected_recovery
+):
+    """Decimal sensor readings at the recovery boundary receive timely heat."""
+    state = MpcState(
+        last_percent=50.0,
+        last_update_ts=1000.0,
+        last_target_temperature=target_temperature,
+    )
+    inp = MpcInput(
+        key="decimal_recovery",
+        target_temperature=target_temperature,
+        room_temperature=room_temperature,
+        temperature_slope_K_per_min=slope,
+    )
+    # Exercise actual subtraction via fallback delta, with the default cap and
+    # four minutes remaining in the hold. +30 is below the big-open exemption.
+    percent, debug, _ = _post_process_percent(
+        inp, MpcParams(), state, 1060.0, 80.0, None
+    )
+    assert percent == (80 if expected_recovery else 50)
+    assert debug["recovery_open"] is expected_recovery
+
+
+@pytest.mark.parametrize("raw_percent", [10.0, 45.0], ids=["step_cap", "small_hold"])
+@pytest.mark.parametrize(
+    ("target_temperature", "room_temperature", "expected_close"),
+    [
+        pytest.param(22.0, 21.9, True, id="decimal_projected_positive_residual"),
+        pytest.param(21.2, 21.1, True, id="decimal_projected_negative_residual"),
+        pytest.param(22.0, 21.89, False, id="projection_below_target"),
+    ],
+)
+def test_decimal_predictive_close_boundary(
+    raw_percent, target_temperature, room_temperature, expected_close
+):
+    """A measured rise reaching target permits closing despite decimal roundoff."""
+    state = MpcState(
+        last_percent=50.0,
+        last_update_ts=1000.0,
+        last_target_temperature=target_temperature,
+    )
+    inp = MpcInput(
+        key="decimal_close",
+        target_temperature=target_temperature,
+        room_temperature=room_temperature,
+        temperature_slope_K_per_min=0.025,
+    )
+    percent, debug, _ = _post_process_percent(
+        inp, MpcParams(), state, 1060.0, raw_percent, None
+    )
+    expected = (
+        int(raw_percent) if expected_close else (25 if raw_percent == 10.0 else 50)
+    )
+    assert percent == expected
+    assert debug["predictive_close"] is expected_close
