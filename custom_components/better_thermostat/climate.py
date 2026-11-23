@@ -3262,8 +3262,10 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         balance_modes = {"heuristic", "pid"}
         active_balance_modes = set()
         active_calibration_modes = set()
+        startup_trvs: tuple[Trv, ...] = ()
         try:
-            for trv in self.real_trvs.values():
+            startup_trvs = tuple(self.real_trvs.values())
+            for trv in startup_trvs:
                 advanced = trv.advanced or {}
 
                 balance_value = advanced.get("balance_mode", "")
@@ -3409,7 +3411,7 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         await self._initialize_arrived_trvs()
         valve_entities = {
             trv.valve_position_entity
-            for trv in self.real_trvs.values()
+            for trv in startup_trvs
             if trv.valve_position_entity
         }
         if valve_entities:
