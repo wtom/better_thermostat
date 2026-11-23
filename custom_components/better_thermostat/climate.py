@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Final, override
 # Home Assistant imports
 from homeassistant.components.climate import ClimateEntity
 from homeassistant.components.climate.const import (
+    ATTR_HVAC_ACTION,
     ATTR_HVAC_MODE,
     ATTR_MAX_TEMP,
     ATTR_MIN_TEMP,
@@ -1850,6 +1851,13 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         await check_critical_entities(self)
         self.async_write_ha_state()
 
+    @callback
+    def _trigger_valve_report_change(
+        self, _event: Event[EventStateChangedData]
+    ) -> None:
+        """Publish an updated action without starting a new control cycle."""
+        self.async_write_ha_state()
+
     async def _trigger_trv_change(self, event: Event[EventStateChangedData]) -> None:
         # A report from a TRV startup went ahead without is the sign it is
         # back; it is initialised before the report is read.
@@ -3254,8 +3262,10 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         balance_modes = {"heuristic", "pid"}
         active_balance_modes = set()
         active_calibration_modes = set()
+        startup_trvs: tuple[Trv, ...] = ()
         try:
-            for trv in self.real_trvs.values():
+            startup_trvs = tuple(self.real_trvs.values())
+            for trv in startup_trvs:
                 advanced = trv.advanced or {}
 
                 balance_value = advanced.get("balance_mode", "")
@@ -3399,6 +3409,17 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         # listener above existed, and a TRV that has come back does not
         # necessarily report again soon.
         await self._initialize_arrived_trvs()
+        valve_entities = {
+            trv.valve_position_entity
+            for trv in startup_trvs
+            if trv.valve_position_entity
+        }
+        if valve_entities:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass, valve_entities, self._trigger_valve_report_change
+                )
+            )
         if self.window_sensor_entity_id is not None:
             self.async_on_remove(
                 async_track_state_change_event(
@@ -4081,6 +4102,11 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         if methods:
             dev_specific["valve_method"] = methods
 
+        # Publish valve activity without feeding it back into calibration or
+        # hysteresis: the controller must still be free to close the valves.
+        if self._has_open_direct_valve_while_idle() is True:
+            dev_specific[ATTR_HVAC_ACTION] = HVACAction.HEATING
+
         dev_specific.update(collect_cycle_telemetry(self))
         dev_specific.update(collect_balance_attrs(self))
         dev_specific.update(collect_pid_debug_attrs(self))
@@ -4266,6 +4292,31 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         if self.attr_hvac_action is None:
             self.attr_hvac_action = self._compute_hvac_action_pure().action
         return self.attr_hvac_action
+
+    def _has_open_direct_valve_while_idle(self) -> bool:
+        """Keep the published action heating while a direct valve reports open."""
+        if (
+            self.hvac_action != HVACAction.IDLE
+            or self.hvac_mode not in (HVACMode.HEAT, HVACMode.HEAT_COOL)
+            or self.bt_hvac_mode == HVACMode.OFF
+            or self.contact_open
+            or self.in_maintenance
+        ):
+            return False
+
+        for trv in self.real_trvs.values():
+            if trv.last_valve_percent is None or not trv.valve_position_entity:
+                continue
+            valve = self.hass.states.get(trv.valve_position_entity)
+            if valve is None or valve.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                continue
+            bump = trv.extra.get("_trvzb_valve_bump_task")
+            if bump is not None and not bump.done() and trv.last_valve_percent == 0:
+                continue
+            opening = convert_to_float(valve.state, self.device_name, "hvac_action")
+            if opening is not None and opening > 0:
+                return True
+        return False
 
     def _should_heat_with_tolerance(
         self, previous_action: HVACAction | None, tol: float

@@ -8,7 +8,10 @@ missing attribute.
 """
 
 from datetime import UTC, datetime
+from unittest.mock import Mock
 
+from homeassistant.components.climate.const import HVACAction, HVACMode
+from homeassistant.core import State
 import pytest
 
 from custom_components.better_thermostat.climate import BetterThermostat
@@ -73,3 +76,52 @@ class TestValveMethod:
         )
         attrs = _extra_state_attributes(bt)
         assert attrs["valve_method"] == {"climate.a": "adapter"}
+
+
+@pytest.mark.parametrize(
+    ("openings", "mode", "contact_open", "bump_running", "reports_heating"),
+    [
+        (("65", "67"), HVACMode.HEAT, False, False, True),
+        (("0", "67"), HVACMode.HEAT, False, False, True),
+        (("0", "0"), HVACMode.HEAT, False, False, False),
+        (("unavailable", "unknown"), HVACMode.HEAT, False, False, False),
+        (("10", "0"), HVACMode.HEAT, False, True, False),
+        (("65", "67"), HVACMode.HEAT, True, False, False),
+        (("65", "67"), HVACMode.OFF, False, False, False),
+    ],
+)
+def test_publish_direct_valve_activity_without_changing_control_action(
+    openings, mode, contact_open, bump_running, reports_heating
+):
+    """An idle MPC controller can still have open valves at the setpoint."""
+    trvs = {}
+    states = {}
+    for index, opening in enumerate(openings):
+        valve_entity = f"number.valve_{index}"
+        trv = Trv(
+            entity_id=f"climate.trv_{index}",
+            valve_position_entity=valve_entity,
+            last_valve_percent=0,
+        )
+        if bump_running:
+            trv.extra["_trvzb_valve_bump_task"] = Mock(done=Mock(return_value=False))
+        trvs[trv.entity_id] = trv
+        states[valve_entity] = State(valve_entity, opening)
+
+    bt = make_state_attributes_bt(
+        real_trvs=trvs,
+        hvac_action=HVACAction.IDLE,
+        hvac_mode=mode,
+        bt_hvac_mode=mode,
+        contact_open=contact_open,
+        in_maintenance=False,
+    )
+    bt.hass.states.get.side_effect = states.get
+    bt._has_open_direct_valve_while_idle = (
+        BetterThermostat._has_open_direct_valve_while_idle.__get__(bt)
+    )
+
+    assert (_extra_state_attributes(bt).get("hvac_action") == HVACAction.HEATING) is (
+        reports_heating
+    )
+    assert bt.hvac_action == HVACAction.IDLE
