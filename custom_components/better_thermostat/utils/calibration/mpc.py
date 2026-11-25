@@ -63,7 +63,7 @@ class MpcParams:
     deadzone_raise_percent: float = 2.0
     deadzone_decay_percent: float = 1.0
     mpc_du_max_percent: float = 25.0
-    min_percent_hold_time_s: float = 300.0  # minimum 5-minute hold time
+    min_percent_hold_time_s: float = 900.0  # regular valve changes: 15-minute hold
     big_change_force_open_percent: float = (
         33.0  # >33% opening change may be applied immediately
     )
