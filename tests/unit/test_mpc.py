@@ -919,6 +919,8 @@ class TestMPCController:
             83.0, 0.02, None, 60, 75, False, False, id="raw_33_opens_with_cap"
         ),
         pytest.param(82.0, 0.02, None, 60, 50, False, False, id="below_33_held"),
+        pytest.param(55.0, 0.02, None, 899, 50, False, False, id="regular_held"),
+        pytest.param(55.0, 0.02, None, 900, 55, False, False, id="regular_released"),
         pytest.param(90.0, 0.15, None, 60, 90, True, False, id="early_recovery"),
         pytest.param(90.0, 0.1, None, 60, 90, True, False, id="recovery_boundary"),
         pytest.param(90.0, 0.02, -0.03, 60, 90, True, False, id="falling_recovery"),
@@ -927,16 +929,16 @@ class TestMPCController:
         pytest.param(90.0, 0.02, float("nan"), 60, 75, False, False, id="nan_capped"),
         pytest.param(90.0, 0.02, -float("inf"), 60, 75, False, False, id="inf_capped"),
         pytest.param(
-            90.0, 0.02, -0.03, 300, 75, False, False, id="expired_no_projection"
+            90.0, 0.02, -0.03, 900, 75, False, False, id="expired_no_projection"
         ),
         pytest.param(
-            90.0, 0.02, -0.01, -600, 50, False, False, id="bounded_clock_rollback"
+            90.0, 0.02, -0.004, -600, 50, False, False, id="bounded_clock_rollback"
         ),
         pytest.param(10.0, 0.05, 0.02, 60, 10, False, True, id="preventive_full_close"),
         pytest.param(
             45.0, 0.05, 0.02, 60, 45, False, True, id="preventive_small_close"
         ),
-        pytest.param(10.0, 0.08, 0.02, 60, 10, False, True, id="crossing_boundary"),
+        pytest.param(10.0, 0.08, 0.02, 660, 10, False, True, id="crossing_boundary"),
         pytest.param(
             45.0, 0.05, -0.02, 60, 50, False, False, id="falling_no_close_bypass"
         ),
@@ -960,7 +962,7 @@ class TestMPCController:
             45.0, -0.02, None, 60, 45, False, True, id="above_target_small_close"
         ),
         pytest.param(
-            10.0, -0.02, -0.02, 300, 10, False, True, id="above_target_expired_hold"
+            10.0, -0.02, -0.02, 900, 10, False, True, id="above_target_expired_hold"
         ),
         pytest.param(90.0, 0.15, -0.03, 59, 50, True, False, id="cadence_wins_open"),
         pytest.param(10.0, 0.05, 0.02, 59, 50, False, True, id="cadence_wins_close"),
@@ -1038,7 +1040,7 @@ def test_default_compute_recovers_before_point_two_kelvin_deficit():
         result, updated_state = _compute_mpc(inp, params, state=state, all_states={})
     assert result is not None
     # The unmodified optimizer asks for less than the big-opening exemption,
-    # but more than the default cap, inside the default five-minute hold.
+    # but more than the default cap, inside the default 15-minute hold.
     assert (
         params.mpc_du_max_percent
         < result.valve_percent
@@ -1082,7 +1084,7 @@ def test_decimal_recovery_boundary(
     # Exercise actual subtraction via fallback delta, with the default cap and
     # four minutes remaining in the hold. +30 is below the big-open exemption.
     percent, debug, _ = _post_process_percent(
-        inp, MpcParams(), state, 1060.0, 80.0, None
+        inp, MpcParams(), state, 1660.0, 80.0, None
     )
     assert percent == (80 if expected_recovery else 50)
     assert debug["recovery_open"] is expected_recovery
@@ -1113,7 +1115,7 @@ def test_decimal_predictive_close_boundary(
         temperature_slope_K_per_min=0.025,
     )
     percent, debug, _ = _post_process_percent(
-        inp, MpcParams(), state, 1060.0, raw_percent, None
+        inp, MpcParams(), state, 1660.0, raw_percent, None
     )
     expected = (
         int(raw_percent) if expected_close else (25 if raw_percent == 10.0 else 50)
