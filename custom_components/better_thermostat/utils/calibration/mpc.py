@@ -2108,15 +2108,35 @@ def _post_process_percent(
             # Exception: large change required (e.g. window event / fast overheat reduction)
             big_open = requested_delta >= params.big_change_force_open_percent
             big_close = (-requested_delta) >= params.big_change_force_close_percent
+            # Near setpoint, a large optimizer step alone is not urgent.
+            # Confirm modeled bypasses against the room and its short trend.
+            allow_exception = big_open or big_close or recovery_open or predictive_close
+            if (
+                allow_exception
+                and inp.room_temperature is not None
+                and inp.target_temperature is not None
+                and delta_kelvin is not None
+            ):
+                measured = inp.target_temperature - inp.room_temperature
+                if abs(measured) < 0.2 and abs(delta_kelvin) < 0.2:
+                    projected = measured
+                    slope = inp.temperature_slope_K_per_min
+                    if slope is not None and math.isfinite(slope):
+                        projected -= slope * remaining_trend_seconds / 60.0
+                    if requested_delta > 0:
+                        allow_exception = (
+                            max(measured, projected) >= MPC_RECOVERY_DEFICIT_K - 1e-9
+                        )
+                    else:
+                        allow_exception = (
+                            min(measured, projected) <= 1e-9 and predictive_close
+                        )
             remaining = hold_time - time_since_update
 
             if (
                 remaining > 0.0
                 and time_since_update < hold_time
-                and not big_open
-                and not big_close
-                and not recovery_open
-                and not predictive_close
+                and not allow_exception
             ):
                 percent_out = round(state.last_percent)
                 debug["hold_block"] = True

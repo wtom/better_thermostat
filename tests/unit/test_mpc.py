@@ -1125,8 +1125,29 @@ def test_decimal_predictive_close_boundary(
     percent, debug, _ = _post_process_percent(
         inp, MpcParams(), state, 1060.0, raw_percent, None
     )
-    expected = (
-        int(raw_percent) if expected_close else (25 if raw_percent == 10.0 else 50)
-    )
+    expected = int(raw_percent) if expected_close else 50
     assert percent == expected
     assert debug["predictive_close"] is expected_close
+
+
+def test_hold_bathroom_recorded_reversals():
+    """Replay the three logged requests with the variant's own last opening."""
+    state = MpcState(
+        last_percent=100.0, last_update_ts=0.0, last_target_temperature=20.9
+    )
+    for elapsed, room, slope, raw, deficit in [
+        (470, 20.74, -0.0003, 88, 0.133),
+        (558, 20.84, -0.0002, 67, 0.066),
+        (651, 20.82, 0.0005, 75, 0.110),
+    ]:
+        inp = MpcInput(
+            key="bath",
+            target_temperature=20.9,
+            room_temperature=room,
+            temperature_slope_K_per_min=slope,
+        )
+        out, _, _ = _post_process_percent(
+            inp, MpcParams(), state, elapsed, raw, deficit
+        )
+        assert out == 100
+        assert state.last_update_ts == 0.0
