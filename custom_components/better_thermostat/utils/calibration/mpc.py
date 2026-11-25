@@ -31,6 +31,7 @@ MPC_TEMP_CHANGE_THRESHOLD_K = 0.05
 MPC_MAX_ABS_RATE_C_PER_MIN = 0.35
 # Recover before a 0.2 K deficit while retaining a near-target noise band.
 MPC_RECOVERY_DEFICIT_K = 0.1
+MPC_TREND_WINDOW_S = 300.0
 
 
 @dataclass
@@ -1865,8 +1866,10 @@ def _post_process_percent(
     last_percent = state.last_percent
     requested_delta = smooth - last_percent if last_percent is not None else 0.0
     hold_time = params.min_percent_hold_time_s
-    remaining_hold_seconds = max(
-        0.0, min(hold_time, hold_time - (now - state.last_update_ts))
+    # Keep trend exceptions on their original clock, not the longer routine hold.
+    trend_window = min(hold_time, MPC_TREND_WINDOW_S)
+    remaining_trend_seconds = max(
+        0.0, min(trend_window, trend_window - (now - state.last_update_ts))
     )
     recovery_open = False
     predictive_close = False
@@ -1876,7 +1879,7 @@ def _post_process_percent(
         slope = inp.temperature_slope_K_per_min
         projected_delta_kelvin = delta_kelvin
         if slope is not None and math.isfinite(slope):
-            projected_delta_kelvin -= slope * remaining_hold_seconds / 60.0
+            projected_delta_kelvin -= slope * remaining_trend_seconds / 60.0
         recovery_deficit_kelvin = delta_kelvin
         if slope is not None and math.isfinite(slope) and slope < 0:
             recovery_deficit_kelvin = max(delta_kelvin, projected_delta_kelvin)
@@ -1893,7 +1896,7 @@ def _post_process_percent(
                 slope is not None
                 and math.isfinite(slope)
                 and slope > 0
-                and remaining_hold_seconds > 0
+                and remaining_trend_seconds > 0
                 and (
                     projected_delta_kelvin <= 0
                     or math.isclose(
